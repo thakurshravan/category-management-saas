@@ -84,13 +84,8 @@ def render_manager_dashboard():
                 
                 st.success(f"🎉 Instantly Generated {len(vendor_list)} Security-Locked Portals!")
                 
-                # --- DYNAMIC BASE URL DETECTION ---
-                # Checks if running on Streamlit Cloud Cloud; defaults to localhost if offline.
-                is_cloud = st.get_option("browser.gatherUsageStats")
-                if is_cloud:
-                    base_url = "https://category-management-saas-uxvkctwmmfgg9kebzvf8h8.streamlit.app"
-                else:
-                    base_url = "http://localhost:8501"
+                # --- FIXED LIVE PRODUCTION DOMAIN ---
+                base_url = "https://category-management-saas-fwpgyjvewktqf4repbby8j.streamlit.app"
                 
                 # Display output inside an interactive loop table
                 generated_records = []
