@@ -49,34 +49,53 @@ def load_dynamic_tools():
     return modules_found
 
 
-# ==========================================
-# SIDEBAR DYNAMIC NAVIGATION
-# ==========================================
-st.sidebar.title("Navigation Menu")
-st.sidebar.markdown("---")
+# ==========================================================
+# 🗺️ SECURITY URL ROUTER (Bypasses Sidebar for Suppliers)
+# ==========================================================
+url_params = st.query_params
 
-# Scan the folder for modules
-available_tools = load_dynamic_tools()
+if "view" in url_params and url_params["view"] == "portal":
+    # 📦 VENDOR PATHWAY: Loads the portal UI directly without ever invoking st.sidebar
+    try:
+        # Dynamically import your stock aggregator to keep the path system fluid
+        spec = importlib.util.spec_from_file_location("stock_aggregator", os.path.join(TOOLS_DIR, "stock_aggregator.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        
+        # Call the standalone public supplier interface function directly
+        mod.render_public_supplier_portal(url_params)
+    except Exception as e:
+        st.error(f"🚨 Failed to securely initialize Supplier Ingest Portal module: {e}")
 
-if available_tools:
-    selected_tool = st.sidebar.radio(
-        "Select an Automation Tool:",
-        list(available_tools.keys())
-    )
+else:
+    # ==========================================
+    # SIDEBAR DYNAMIC NAVIGATION (INTERNAL ONLY)
+    # ==========================================
+    st.sidebar.title("Navigation Menu")
     st.sidebar.markdown("---")
-    st.sidebar.caption(f"🤖 Connected tools: {len(available_tools)}")
-else:
-    st.sidebar.warning("No automation scripts found inside `tools_library/` folder.")
-    selected_tool = None
 
-st.sidebar.info("💡 **Drop-and-Play:** Drop a new script into `tools_library/` and it instantly syncs up here!")
+    # Scan the folder for modules
+    available_tools = load_dynamic_tools()
 
-# ==========================================
-# MASTER UI ROUTER RUNNER
-# ==========================================
-if selected_tool and selected_tool in available_tools:
-    # Run the UI function of the selected module directly 
-    available_tools[selected_tool].render_ui()
-else:
-    st.title("Welcome to your Category Management Suite")
-    st.markdown("Please place your automation files into the `tools_library/` folder to activate the platform.")
+    if available_tools:
+        selected_tool = st.sidebar.radio(
+            "Select an Automation Tool:",
+            list(available_tools.keys())
+        )
+        st.sidebar.markdown("---")
+        st.sidebar.caption(f"🤖 Connected tools: {len(available_tools)}")
+    else:
+        st.sidebar.warning("No automation scripts found inside `tools_library/` folder.")
+        selected_tool = None
+
+    st.sidebar.info("💡 **Drop-and-Play:** Drop a new script into `tools_library/` and it instantly syncs up here!")
+
+    # ==========================================
+    # MASTER UI ROUTER RUNNER
+    # ==========================================
+    if selected_tool and selected_tool in available_tools:
+        # Run the UI function of the selected module directly 
+        available_tools[selected_tool].render_ui()
+    else:
+        st.title("Welcome to your Category Management Suite")
+        st.markdown("Please place your automation files into the `tools_library/` folder to activate the platform.")
