@@ -42,7 +42,7 @@ def render_ui():
         if st.button("Execute Cross-Functional Allocation Mapping Loop", type="primary", use_container_width=True):
             with st.spinner("Processing structural matrix intersections across your new ERP schemas..."):
                 try:
-                    # Load Data Streams
+                    # Load Data Streams Safely from Memory Buffers
                     df_soh = pd.read_csv(soh_upload) if soh_upload.name.endswith('.csv') else pd.read_excel(soh_upload)
                     df_sales = pd.read_csv(sales_upload) if sales_upload.name.endswith('.csv') else pd.read_excel(sales_upload)
                     df_rtv = pd.read_csv(rtv_upload) if rtv_upload.name.endswith('.csv') else pd.read_excel(rtv_upload)
@@ -55,7 +55,7 @@ def render_ui():
                     df_po = clean_headers(df_po)
 
                     # --- 3. DYNAMIC ERP COLUMN TRANSFORMATION PIPELINE ---
-                    # Map the old SAP CODE to your new ERP 'Article' identifier across datasets
+                    # Map structural variance to 'Article' across all sets
                     for df_obj in [df_soh, df_sales, df_rtv, df_po]:
                         if 'Article' in df_obj.columns:
                             df_obj['Article'] = df_obj['Article'].astype(str).str.strip()
@@ -91,13 +91,18 @@ def render_ui():
                     df_rtv_clean = df_rtv.groupby(['Article', 'Store'])[rtv_col].sum().reset_index()
                     df_po_clean = df_po.groupby(['Article', 'Store'])[po_col].sum().reset_index()
 
-                    # Intersect all 4 logs into a unified processing matrix
+                    # Reassign explicit target names to prevent merge pollution
+                    df_sales_clean.rename(columns={sales_col: 'Total_Sales_Qty'}, inplace=True)
+                    df_rtv_clean.rename(columns={rtv_col: 'Total_RTV_Qty'}, inplace=True)
+                    df_po_clean.rename(columns={po_col: 'Total_Open_PO_Qty'}, inplace=True)
+
+                    # Intersect all log data frames into a single master matrix array
                     df = pd.merge(df_soh, df_sales_clean, on=['Article', 'Store'], how='outer')
                     df = pd.merge(df, df_rtv_clean, on=['Article', 'Store'], how='left')
                     df = pd.merge(df, df_po_clean, on=['Article', 'Store'], how='left')
                     df.fillna(0, inplace=True)
 
-                    # Dynamic Metadata Synchronization Loop
+                    # Dynamic Metadata Forward and Backward Fill Loop
                     meta_candidates = ['Product Name', 'ProductDesc', 'Mdse Catgry Desc', 'Brand', 'BRAND', 'Location', 'Model', 'Description']
                     meta_cols = [c for c in meta_candidates if c in df.columns]
                     
@@ -105,7 +110,7 @@ def render_ui():
                         df[col] = df.groupby('Article')[col].transform(lambda x: x.replace(0, np.nan).ffill().bfill()).fillna("N/A")
 
                     # --- 5. EXECUTE ALLOCATION MATRIX CALCULATIONS ---
-                    df['Daily_Sales'] = df[sales_col] / DAYS_IN_PERIOD
+                    df['Daily_Sales'] = df['Total_Sales_Qty'] / DAYS_IN_PERIOD
                     df['Avg Sales 20D'] = (df['Daily_Sales'] * TARGET_DAYS).round(2)
                     
                     # Target Demand Capacity
@@ -121,7 +126,7 @@ def render_ui():
 
                     for article in df['Article'].unique():
                         senders = df[(df['Article'] == article) & (df['Surplus'] > 0)].copy()
-                        receivers = df[df['Article'] == article].sort_values(sales_col, ascending=False)
+                        receivers = df[df['Article'] == article].sort_values('Total_Sales_Qty', ascending=False)
                         
                         for _, s in senders.iterrows():
                             rem_surplus = s['Surplus']
@@ -150,23 +155,21 @@ def render_ui():
                                         rem_surplus -= qty
                                         current_capacity[(article, r['Store'])] -= qty
 
-                    # --- 7. EXPORT SPREADSHEETS ---
+                    # --- 7. EXPORT COMPRESSED WORKBOOKS ---
                     excel_buffer = io.BytesIO()
                     with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
-                        # Sheet 1: Core Master Sheet
                         df.to_excel(writer, sheet_name='Unified Inventory Grid', index=False)
                         
-                        # Sheet 2: Stock Transfer Outcome (Matching User's target screenshot formatting)
                         if transfer_results:
                             pd.DataFrame(transfer_results).to_excel(writer, sheet_name='Stock Transfer Plan', index=False)
                         else:
-                            pd.DataFrame([{"System Notice": "No matching inventory records found for reallocation."}]).to_excel(writer, sheet_name='Stock Transfer Plan', index=False)
+                            pd.DataFrame([{"System Notice": "No matching inventory deficit matched to stock surplus allocations."}]).to_excel(writer, sheet_name='Stock Transfer Plan', index=False)
 
                     excel_data = excel_buffer.getvalue()
                     st.balloons()
                     st.success("🎯 Multi-Stream ERP Processing Loop Finalized!")
 
-                    # Metrics display panels
+                    # Metrics KPI visualization columns
                     sc1, sc2, sc3 = st.columns(3)
                     sc1.metric("Unique Articles Processed", len(df['Article'].unique()))
                     sc2.metric("Scheduled Store Actions", len(transfer_results))
@@ -182,3 +185,7 @@ def render_ui():
                     )
                 except Exception as ex:
                     st.error(f"🚨 Integration Engine Error: {str(ex)}")
+
+# Standard block executor fallback guard
+if __name__ == "__main__":
+    render_ui()
