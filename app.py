@@ -35,24 +35,26 @@ def supabase_auth_request(endpoint, payload):
         return {"error_description": str(e)}, 500
 
 def login_user(email, password):
-    payload = {"email": email, "password": password, "gotrue_meta_security": {}}
+    payload = {"email": email.strip(), "password": password, "gotrue_meta_security": {}}
     res, status = supabase_auth_request("token?grant_type=password", payload)
     if status == 200:
         st.session_state["auth_token"] = res.get("access_token")
         st.session_state["user_email"] = res.get("user", {}).get("email")
         st.session_state["user_id"] = res.get("user", {}).get("id")
         return True, "Success"
-    return False, res.get("error_description", "Invalid login credentials.")
+    
+    # Expose the precise API error reason
+    err_msg = res.get("error_description") or res.get("error", {}).get("message") or "Invalid credentials."
+    return False, f"Database Refusal: {err_msg}"
 
 def register_user(email, password):
-    payload = {"email": email, "password": password}
+    payload = {"email": email.strip(), "password": password}
     res, status = supabase_auth_request("signup", payload)
     if status == 200:
-        # Check if email confirmation is required by your Supabase setting tier
-        if res.get("confirmed_at") or not res.get("identities"):
-            return True, "Account created! You can now log in."
-        return True, "Registration initiated! Please check your email inbox to confirm your account."
-    return False, res.get("error_description", "Registration failed.")
+        return True, "Account created! Proceed to the Login tab."
+    
+    err_msg = res.get("error_description") or res.get("error", {}).get("message") or "Registration blocked."
+    return False, f"Database Refusal: {err_msg}"
 
 # Initialize global authentication states in session memory
 if "auth_token" not in st.session_state:
@@ -63,7 +65,7 @@ if "auth_token" not in st.session_state:
 # ==========================================================
 url_params = st.query_params
 
-# If a supplier arrives via an active token drop link, bypass all global login requirements completely!
+# If a supplier arrives via an active token drop link, bypass login completely!
 if "view" in url_params and url_params["view"] == "portal":
     try:
         spec = importlib.util.spec_from_file_location("stock_aggregator", os.path.join(TOOLS_DIR, "stock_aggregator.py"))
@@ -78,12 +80,11 @@ if "view" in url_params and url_params["view"] == "portal":
 # 🛑 PRIVATE GATE: LOGIN / SIGNUP PORTAL SCREEN
 # ==========================================================
 if st.session_state["auth_token"] is None:
-    # Minimalist centered container layout for commercial SaaS look
     _, col_auth, _ = st.columns([1, 1.5, 1])
     
     with col_auth:
         st.title("🚀 Category Management SaaS Suite")
-        st.markdown("Commercial Portal Suite — Log in or register an account to manage your supplier streams.")
+        st.markdown("Commercial Portal Suite — Authenticate to access your management suite tools.")
         
         auth_mode = st.tabs(["🔒 Account Login", "✨ Create Subscriber Account"])
         
@@ -96,28 +97,26 @@ if st.session_state["auth_token"] is None:
                 if login_email and login_password:
                     success, msg = login_user(login_email, login_password)
                     if success:
-                        st.success("Access Granted! Launching ecosystem layout...")
+                        st.success("Access Granted! Launching workspace layout...")
                         st.rerun()
                     else:
                         st.error(msg)
                 else:
-                    st.warning("Please fill out all credential inputs.")
+                    st.warning("Please fill out all fields.")
                     
         # B. REGISTRATION INTERFACE TAB
         with auth_mode[1]:
             st.markdown("### Start your subscription cycle")
             reg_email = st.text_input("Enter Email Address", key="reg_em")
-            reg_password = st.text_input("Create Secure Password", type="password", key="reg_pw", help="Must be at least 6 characters long.")
+            reg_password = st.text_input("Create Secure Password", type="password", key="reg_pw")
             
             if st.button("Register & Initialize Tenant License", use_container_width=True):
-                if reg_email and len(reg_password) >= 6:
+                if reg_email and reg_password:
                     success, msg = register_user(reg_email, reg_password)
                     if success:
                         st.success(msg)
                     else:
                         st.error(msg)
-                elif len(reg_password) < 6:
-                    st.warning("Password security floor mismatch. Must be 6+ characters.")
                 else:
                     st.warning("Please fill out all registration fields.")
     st.stop()
