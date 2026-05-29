@@ -1,101 +1,171 @@
-# app.py
 import os
 import sys
 import importlib.util
 import streamlit as st
+import requests
 
 # Configure the master application window layout
-st.set_page_config(page_title="Category Management Automation Suite", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Category Management SaaS Suite", page_icon="🚀", layout="wide")
 
-# Directory where all backend automation tools are stored
+# Directory configurations
 TOOLS_DIR = "tools_library"
-
-# Create the folder automatically if it's missing
 if not os.path.exists(TOOLS_DIR):
     os.makedirs(TOOLS_DIR)
-
-# Ensure the system path can see files inside tools_library
 if TOOLS_DIR not in sys.path:
     sys.path.append(TOOLS_DIR)
 
-
-def load_dynamic_tools():
-    """
-    Scans tools_library/ and automatically imports any Python file 
-    that has TOOL_NAME and render_ui() defined.
-    """
-    modules_found = {}
-    
-    # Read files from folder and sort them alphabetically
-    for file in sorted(os.listdir(TOOLS_DIR)):
-        if file.endswith(".py") and not file.startswith("__"):
-            module_name = file[:-3]  # Strip '.py'
-            file_path = os.path.join(TOOLS_DIR, file)
-            
-            try:
-                # Dynamic import execution setup
-                spec = importlib.util.spec_from_file_location(module_name, file_path)
-                mod = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(mod)
-                
-                # Check for structural requirements
-                if hasattr(mod, "TOOL_NAME") and hasattr(mod, "render_ui"):
-                    icon = getattr(mod, "TOOL_ICON", "⚙️")
-                    sidebar_label = f"{icon} {mod.TOOL_NAME}"
-                    modules_found[sidebar_label] = mod
-            except Exception as e:
-                st.sidebar.error(f"⚠️ Error loading file '{file}': {e}")
-                
-    return modules_found
-
+# Fetch secure Supabase credentials from your Streamlit Environment Secrets
+SB_URL = st.secrets.get("SUPABASE_URL", "")
+SB_KEY = st.secrets.get("SUPABASE_KEY", "")
 
 # ==========================================================
-# 🗺️ SECURITY URL ROUTER (Bypasses Sidebar for Suppliers)
+# 🔐 SUPABASE AUTHENTICATION ENGINE UTILITIES
+# ==========================================================
+def supabase_auth_request(endpoint, payload):
+    """Handles raw HTTPS communication requests to your Supabase Auth server API."""
+    headers = {
+        "apiKey": SB_KEY,
+        "Content-Type": "application/json"
+    }
+    url = f"{SB_URL}/auth/v1/{endpoint}"
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        return response.json(), response.status_code
+    except Exception as e:
+        return {"error_description": str(e)}, 500
+
+def login_user(email, password):
+    payload = {"email": email, "password": password, "gotrue_meta_security": {}}
+    res, status = supabase_auth_request("token?grant_type=password", payload)
+    if status == 200:
+        st.session_state["auth_token"] = res.get("access_token")
+        st.session_state["user_email"] = res.get("user", {}).get("email")
+        st.session_state["user_id"] = res.get("user", {}).get("id")
+        return True, "Success"
+    return False, res.get("error_description", "Invalid login credentials.")
+
+def register_user(email, password):
+    payload = {"email": email, "password": password}
+    res, status = supabase_auth_request("signup", payload)
+    if status == 200:
+        # Check if email confirmation is required by your Supabase setting tier
+        if res.get("confirmed_at") or not res.get("identities"):
+            return True, "Account created! You can now log in."
+        return True, "Registration initiated! Please check your email inbox to confirm your account."
+    return False, res.get("error_description", "Registration failed.")
+
+# Initialize global authentication states in session memory
+if "auth_token" not in st.session_state:
+    st.session_state["auth_token"] = None
+
+# ==========================================================
+# 🗺️ SECURITY URL ROUTER (PUBLIC DEEP LINKS)
 # ==========================================================
 url_params = st.query_params
 
+# If a supplier arrives via an active token drop link, bypass all global login requirements completely!
 if "view" in url_params and url_params["view"] == "portal":
-    # 📦 VENDOR PATHWAY: Loads the portal UI directly without ever invoking st.sidebar
     try:
-        # Dynamically import your stock aggregator to keep the path system fluid
         spec = importlib.util.spec_from_file_location("stock_aggregator", os.path.join(TOOLS_DIR, "stock_aggregator.py"))
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        
-        # Call the standalone public supplier interface function directly
         mod.render_public_supplier_portal(url_params)
     except Exception as e:
-        st.error(f"🚨 Failed to securely initialize Supplier Ingest Portal module: {e}")
+        st.error(f"🚨 Supplier Gate Error: {e}")
+    st.stop()
 
-else:
-    # ==========================================
-    # SIDEBAR DYNAMIC NAVIGATION (INTERNAL ONLY)
-    # ==========================================
-    st.sidebar.title("Navigation Menu")
+# ==========================================================
+# 🛑 PRIVATE GATE: LOGIN / SIGNUP PORTAL SCREEN
+# ==========================================================
+if st.session_state["auth_token"] is None:
+    # Minimalist centered container layout for commercial SaaS look
+    _, col_auth, _ = st.columns([1, 1.5, 1])
+    
+    with col_auth:
+        st.title("🚀 Category Management SaaS Suite")
+        st.markdown("Commercial Portal Suite — Log in or register an account to manage your supplier streams.")
+        
+        auth_mode = st.tabs(["🔒 Account Login", "✨ Create Subscriber Account"])
+        
+        # A. LOGIN INTERFACE TAB
+        with auth_mode[0]:
+            login_email = st.text_input("Business Email Address", key="login_em")
+            login_password = st.text_input("Account Password", type="password", key="login_pw")
+            
+            if st.button("Authenticate into Workspace", type="primary", use_container_width=True):
+                if login_email and login_password:
+                    success, msg = login_user(login_email, login_password)
+                    if success:
+                        st.success("Access Granted! Launching ecosystem layout...")
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                else:
+                    st.warning("Please fill out all credential inputs.")
+                    
+        # B. REGISTRATION INTERFACE TAB
+        with auth_mode[1]:
+            st.markdown("### Start your subscription cycle")
+            reg_email = st.text_input("Enter Email Address", key="reg_em")
+            reg_password = st.text_input("Create Secure Password", type="password", key="reg_pw", help="Must be at least 6 characters long.")
+            
+            if st.button("Register & Initialize Tenant License", use_container_width=True):
+                if reg_email and len(reg_password) >= 6:
+                    success, msg = register_user(reg_email, reg_password)
+                    if success:
+                        st.success(msg)
+                    else:
+                        st.error(msg)
+                elif len(reg_password) < 6:
+                    st.warning("Password security floor mismatch. Must be 6+ characters.")
+                else:
+                    st.warning("Please fill out all registration fields.")
+    st.stop()
+
+# ==========================================================
+# 📊 INTERNAL PAGINATION LAYER (AUTHORIZED USERS ONLY)
+# ==========================================================
+def load_dynamic_tools():
+    modules_found = {}
+    for file in sorted(os.listdir(TOOLS_DIR)):
+        if file.endswith(".py") and not file.startswith("__"):
+            module_name = file[:-3]
+            file_path = os.path.join(TOOLS_DIR, file)
+            try:
+                spec = importlib.util.spec_from_file_location(module_name, file_path)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                if hasattr(mod, "TOOL_NAME") and hasattr(mod, "render_ui"):
+                    icon = getattr(mod, "TOOL_ICON", "⚙️")
+                    modules_found[f"{icon} {mod.TOOL_NAME}"] = mod
+            except Exception as e:
+                st.sidebar.error(f"⚠️ Load Error '{file}': {e}")
+    return modules_found
+
+# Render Protected Sidebar Navigation Environment
+st.sidebar.title("SaaS Control Center")
+st.sidebar.caption(f"👤 Active License: `{st.session_state['user_email']}`")
+st.sidebar.markdown("---")
+
+available_tools = load_dynamic_tools()
+
+if available_tools:
+    selected_tool = st.sidebar.radio("Select an Automation Tool:", list(available_tools.keys()))
     st.sidebar.markdown("---")
+else:
+    st.sidebar.warning("No operational assets assigned to your account partition.")
+    selected_tool = None
 
-    # Scan the folder for modules
-    available_tools = load_dynamic_tools()
+# Log out execution command
+if st.sidebar.button("Log Out of Session", use_container_width=True):
+    st.session_state["auth_token"] = None
+    st.session_state["user_email"] = None
+    st.session_state["user_id"] = None
+    st.rerun()
 
-    if available_tools:
-        selected_tool = st.sidebar.radio(
-            "Select an Automation Tool:",
-            list(available_tools.keys())
-        )
-        st.sidebar.markdown("---")
-        st.sidebar.caption(f"🤖 Connected tools: {len(available_tools)}")
-    else:
-        st.sidebar.warning("No automation scripts found inside `tools_library/` folder.")
-        selected_tool = None
-
-    st.sidebar.info("💡 **Drop-and-Play:** Drop a new script into `tools_library/` and it instantly syncs up here!")
-
-    # ==========================================
-    # MASTER UI ROUTER RUNNER
-    # ==========================================
-    if selected_tool and selected_tool in available_tools:
-        # Run the UI function of the selected module directly 
-        available_tools[selected_tool].render_ui()
-    else:
-        st.title("Welcome to your Category Management Suite")
-        st.markdown("Please place your automation files into the `tools_library/` folder to activate the platform.")
+# Run the selected tool UI directly
+if selected_tool and selected_tool in available_tools:
+    available_tools[selected_tool].render_ui()
+else:
+    st.title("Welcome to your Category Management Suite")
+    st.markdown("Initialize your operational loop modules using the navigation menu dashboard selection controls.")
