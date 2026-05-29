@@ -1,0 +1,6 @@
+Data/
+__pycache__/
+.streamlit/
+*.bat
+.DS_Store
+Thumbs.db
