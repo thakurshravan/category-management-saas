@@ -84,12 +84,20 @@ def render_manager_dashboard():
                 
                 st.success(f"🎉 Instantly Generated {len(vendor_list)} Security-Locked Portals!")
                 
+                # --- DYNAMIC BASE URL DETECTION ---
+                # Checks if running on Streamlit Cloud Cloud; defaults to localhost if offline.
+                is_cloud = st.get_option("browser.gatherUsageStats")
+                if is_cloud:
+                    base_url = "https://category-management-saas-uxvkctwmmfgg9kebzvf8h8.streamlit.app"
+                else:
+                    base_url = "http://localhost:8501"
+                
                 # Display output inside an interactive loop table
                 generated_records = []
                 for vendor in vendor_list:
                     clean_slug = vendor.lower().replace(" ", "-")
                     # Embed target expiration key right inside the query string URL parameters
-                    public_url = f"http://localhost:8501/?view=portal&vendor={clean_slug}&exp={expiry_date}"
+                    public_url = f"{base_url}/?view=portal&vendor={clean_slug}&exp={expiry_date}"
                     
                     generated_records.append({
                         "Supplier Brand": vendor.upper(),
@@ -106,7 +114,6 @@ def render_manager_dashboard():
                 st.warning("Please input at least one brand name to generate links.")
 
     with tab_dashboard:
-        # (Dashboard code remains identical for viewing/downloading your data files)
         st.subheader("Master Ingest Control Center")
         cloud_files = [f for f in os.listdir(CLOUD_STORAGE_DIR) if f.endswith('.csv') or f.endswith('.xlsx')]
         
@@ -150,14 +157,13 @@ def render_public_supplier_portal(url_params):
             if datetime.now().date() > expiry_date_obj:
                 is_expired = True
         except ValueError:
-            pass # Handle format anomalies gracefully
+            pass 
 
     if is_expired:
-        # Render a locked window state if the validity window has passed
         st.error("🔒 **Access Window Expired**")
         st.subheader("This upload connection link is no longer valid.")
         st.markdown(f"The inventory submission window for this cycle closed on **{expiry_param}**. Please reach out directly to your Category Manager to request an extension or a refreshed link portal.")
-        st.stop() # Halts execution immediately so they can't see or use the file uploader
+        st.stop() 
 
     # --- ACTIVE PORTAL STATE ---
     st.title(f"📦 Secure Vendor Inventory Upload Portal")
