@@ -32,7 +32,6 @@ def query_ledger(action, payload=None, target_id=None):
         return []
 
 def render_ui():
-    # Performance metric evaluation parameters
     BASE_COMMISSION_PERCENT = 0.02
     STRETCH_GOAL_THRESHOLD = 15000
     STRETCH_GOAL_BONUS = 500
@@ -43,21 +42,18 @@ def render_ui():
 
     hub_tabs = st.tabs(["📊 Performance KPIs", "📝 Inquiry Capture", "💰 My Earnings", "⭐ Review Stream", "👑 Admin Board"])
 
-    # Fetch global logging sets
     raw_ledger = query_ledger("SELECT")
     df_master = pd.DataFrame(raw_ledger) if raw_ledger else pd.DataFrame()
 
     # ==========================================================
-    # 1. FIXED PARAMETERS INTENSIVE INTAKE FORM
+    # 1. FIXED PARAMETERS INTAKE FORM (Strict Numeric SAP Guard)
     # ==========================================================
     with hub_tabs[1]:
         st.subheader("Showroom Demand Intake Form")
         with st.form("showroom_intake_form", clear_on_submit=True):
             
-            # Form Data Fields Configuration
             col_f1, col_f2 = st.columns(2)
             with col_f1:
-                # 🏬 ERP Validated Dropdown Menu Array Selection
                 f_store = st.selectbox("STORE NAME", [
                     "RALN", "RAMM", "RAWM", "RBAM", "RDCC", "RDHL", "RDLM", "RDMU", 
                     "RGMM", "RHMD", "RJH0", "RMCC", "RMOE", "RRAK", "RSCC", "RZCC"
@@ -66,19 +62,19 @@ def render_ui():
                 f_cust_phone = st.text_input("Customer Contact Number")
                 f_cust_email = st.text_input("Customer Email Address", value="N/A")
                 f_model = st.text_input("PRODUCT MODEL DETAILS", placeholder="e.g., OLED65CXPTA")
-                f_article = st.text_input("Article Code (SAP Code)", placeholder="e.g., 1004928")
+                
+                # 🔢 CRITICAL: FORCE NUMERIC VALUE FOR ARTICLE CODE
+                f_article = st.number_input("Article Code (SAP Code) - NUMERIC ONLY", min_value=1, step=1, value=1000001, help="Letters and symbols are restricted.")
             
             with col_f2:
                 f_value = st.number_input("PRODUCT VALUE (Numeric AED)", min_value=0.0, step=100.0)
                 f_brand = st.text_input("BRAND", placeholder="e.g., LG, Sony, Samsung")
                 
-                # 🏷️ Corporate Inventory Categorization Array Selection
                 f_category = st.selectbox("Category", [
                     "ACC", "AV", "GAM", "IMG", "IT", "JSP", "LA", "MM", 
                     "OAD", "PG", "S&N", "SDA", "TEL", "WTC", "OTH"
                 ])
                 
-                # 📢 Operational CX Pipeline Array Selection
                 f_cx = st.selectbox("CX RESPONSE", [
                     "FUTURE BUYER", "JUST BROWSING", "NOT PART OF STORE ASSORTMENT", 
                     "NOT PART OF UAE STORES' ASSORTMENT", "OTH", "PRICE ISSUE", 
@@ -87,7 +83,6 @@ def render_ui():
                 
                 f_remarks = st.text_area("ANY REMARKS", placeholder="Add workflow specifics...")
                 
-                # Employee Structural Parameters
                 f_emp_code = st.number_input("EMP Code (Numeric)", min_value=1, step=1, value=1001)
                 f_emp_name = st.text_input("Emp Name", value=st.session_state.get("user_email", "Staff Representative"))
 
@@ -99,7 +94,7 @@ def render_ui():
                         "customer_phone": f_cust_phone,
                         "customer_email": f_cust_email,
                         "product_model_details": f_model,
-                        "article_code": f_article,
+                        "article_code": str(int(f_article)), # Formatted cleanly as a numeric string variant payload
                         "product_value": f_value,
                         "brand": f_brand,
                         "category": f_category,
@@ -110,14 +105,13 @@ def render_ui():
                         "salesman_email": st.session_state.get("user_email", "staff@company.com")
                     }
                     if query_ledger("INSERT", payload=entry_payload):
-                        st.success("🎉 Showroom entry recorded successfully!")
+                        st.success("🎉 Showroom entry verified and recorded successfully!")
                         st.rerun()
                     else:
                         st.error("Network synchronization timeout.")
                 else:
                     st.warning("Customer Name, Contact Number, and Article Code are mandatory fields.")
 
-    # Filter localized rows for logged-in salesman views
     if not df_master.empty and 'salesman_email' in df_master.columns:
         df_personal = df_master[df_master['salesman_email'] == st.session_state.get("user_email", "")].copy()
     else:
@@ -129,7 +123,6 @@ def render_ui():
     with hub_tabs[2]:
         st.subheader("My Commission & Incentive Trackers")
         if not df_personal.empty:
-            # Sales closed triggers commission rewards
             df_won = df_personal[df_personal['cx_response'] == 'SALES CLOSED']
             won_volume = df_won['product_value'].sum()
             
@@ -205,11 +198,10 @@ def render_ui():
                 st.markdown("---")
                 st.markdown("### Active Pipeline Logs Grid")
                 
-                # Admin management fields to log reviews manually or overwrite statuses
                 for index_pos, row_item in df_master.iterrows():
                     with st.expander(f"Lead Reference: {row_item['customer_name']} | Store: {row_item['store_name']} | Rep: {row_item['emp_name']}"):
                         col_adm1, col_adm2, col_adm3 = st.columns(3)
-                        col_adm1.write(f"**Value:** {row_item['product_value']} AED | **SAP:** {row_item['article_code']}")
+                        col_adm1.write(f"**Value:** {row_item['product_value']} AED | **SAP Code:** {int(row_item['article_code'])}")
                         
                         up_cx = col_adm2.selectbox("Override CX State", [
                             "FUTURE BUYER", "JUST BROWSING", "NOT PART OF STORE ASSORTMENT", 
