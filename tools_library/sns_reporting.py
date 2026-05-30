@@ -33,9 +33,13 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         if 'Article Name' in target_df.columns:
             target_df['Article Name'] = target_df['Article Name'].astype(str).str.strip()
 
-    # Deduplicate Email Master by 'Article Name' to prevent index multiplication collisions
+    # Deduplicate Email Master by 'Article Name' to prevent cross-join explosions
     if 'Article Name' in email_master.columns:
         email_master = email_master.drop_duplicates(subset=['Article Name'], keep='first')
+        
+    # Crucial: Isolate the Email Master to ONLY Article Name and Email columns to avoid name collisions
+    if 'Email' in email_master.columns and 'Article Name' in email_master.columns:
+        email_master = email_master[['Article Name', 'Email']]
 
     # 2. Strict Date Filtering Layer on Sales Sheet via "Invoice Created On"
     date_col = 'Invoice Created On'
@@ -47,7 +51,6 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         ]
     
     # 3. Structural Renaming & Data Alignment
-    # Maps alternative schema headers from incoming sheets to standard formats
     columns_rename = {
         'Site': 'Site', 'Location': 'Location Name', 'Location Name': 'Location Name',
         'Physical Stock': 'Physical Stock', 'Physical inventory': 'Physical Stock',
@@ -63,10 +66,10 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     df_sales['Report Type'] = 'Sales'
     df_stock['Report Type'] = 'Stock'
 
-    # Combine datasets safely
+    # Combine datasets safely and completely ignore/reset old index tracking positions
     combined_df = pd.concat([df_sales, df_stock], ignore_index=True)
     
-    # Merge using the common 'Article Name' factor
+    # Merge using the isolated 'Article Name' master map
     combined_df = combined_df.merge(email_master, how='left', on=['Article Name'])
     
     # Fallback string assignments for unmapped assets
@@ -101,9 +104,17 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         if not sales_sheet.empty and 'Invoice Created On' in sales_sheet.columns:
             sales_sheet['Invoice Created On'] = pd.to_datetime(sales_sheet['Invoice Created On']).dt.date
 
-        # Safely slice down to matching columns present in the source files
-        sales_sheet = sales_sheet[[c for c in sales_specific_cols if c in sales_sheet.columns]].dropna(how='all')
-        stock_sheet = stock_sheet[[c for c in stock_specific_cols if c in stock_sheet.columns]].dropna(how='all')
+        # Clear duplicate indices on the subgroup targets
+        sales_sheet.reset_index(drop=True, inplace=True)
+        stock_sheet.reset_index(drop=True, inplace=True)
+
+        # Build clean column filtering sequences with completely unique objects
+        sales_cols_clean = list(dict.fromkeys([c for c in sales_specific_cols if c in sales_sheet.columns]))
+        stock_cols_clean = list(dict.fromkeys([c for c in stock_specific_cols if c in stock_sheet.columns]))
+
+        # Safely slice using the unique column keys list
+        sales_sheet = sales_sheet[sales_cols_clean].dropna(how='all')
+        stock_sheet = stock_sheet[stock_cols_clean].dropna(how='all')
 
         # Skip compilation loop if both data fragments contain no items
         if sales_sheet.empty and stock_sheet.empty:
