@@ -48,7 +48,7 @@ def send_cloud_smtp_email(smtp_server, smtp_port, sender_email, sender_password,
         return False, str(error)
 
 def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body, start_date, end_date, execution_mode, smtp_settings=None):
-    """Executes isolated sheet splits matching your exact notebook column output schema specifications."""
+    """Executes isolated sheet splits matching your exact raw Sales & Stock column specifications."""
     
     # Load Input Data Streams Safely from Memory Buffers
     df_sales = pd.read_excel(sales_file) if sales_file.name.endswith('.xlsx') else pd.read_csv(sales_file)
@@ -59,21 +59,15 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     df_stock = clean_headers(df_stock)
     email_master = clean_headers(email_master)
 
-    # Standardize common join key column 'Brand' across all datasets as referenced in your notebook cells
-    for target_df in [df_sales, df_stock, email_master]:
-        if 'Brand' in target_df.columns:
-            target_df['Brand'] = target_df['Brand'].astype(str).str.strip().str.upper()
-
-    if 'Brand' in email_master.columns:
-        email_master = email_master.drop_duplicates(subset=['Brand'], keep='first')
-        
-    if 'Email' in email_master.columns and 'Brand' in email_master.columns:
-        email_master = email_master[['Brand', 'Email']]
+    # Validate that Email Master has the columns shown in your layout image
+    if 'Article Name' in email_master.columns and 'Email' in email_master.columns:
+        email_master['Article Name'] = email_master['Article Name'].astype(str).str.strip().str.upper()
+        email_map = email_master.drop_duplicates(subset=['Article Name']).set_index('Article Name')['Email'].to_dict()
     else:
-        raise ValueError("The uploaded Email Master sheet must contain exact 'Brand' and 'Email' headers.")
+        raise ValueError("The uploaded Email Master sheet must contain exact 'Article Name' and 'Email' headers.")
 
-    # Strict Date Filtering Layer on Sales Sheet via "Order Date"
-    date_col = 'Order Date'
+    # Strict Date Filtering Layer on Sales Sheet via "Invoice Created On"
+    date_col = 'Invoice Created On'
     if date_col in df_sales.columns:
         df_sales[date_col] = pd.to_datetime(df_sales[date_col], errors='coerce')
         df_sales = df_sales[
@@ -81,52 +75,46 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
             (df_sales[date_col].dt.date <= end_date)
         ].copy()
 
-    # Structural Renaming Dictionary mapped identically from your Notebook Cell 9
-    columns_rename = {
-        'Item number': 'Item Code', 'Item Name': 'Item Name', 
-        'Description': 'Product Description', 'Retail Brand': 'Brand', 
-        'Retail Level 1 code': 'Category Code', 'Warehouse': 'Warehouse', 
-        'Location': 'Location', 
-        'Physical inventory': 'Total Inventory', 
-        'Available physical': 'Sellable Inventory', 
-        'Physical reserved': 'Inventory Reserved (either against order / transit)',
-        'Header Business Unit': 'Warehouse', 'Brand': 'Brand', 
-        'BrandDescription': 'Brand Description', 'Item Dim Cat Code (L1)': 'Category Code', 
-        'RRPPrice': 'Sales Value', 'QtyOrdered': 'Sales Quantity', 
-        'ItemId': 'Item Code', 'ItemName': 'Item Name', 'ProductDesc': 'Product Description', 
-        'OrderDate': 'Order Date'
-    }
-    df_stock = df_stock.rename(columns=columns_rename)
-    df_sales = df_sales.rename(columns=columns_rename)
-
-    # EXACT OUTPUT COLUMNS MATRIX - TAKEN DIRECTLY FROM YOUR NOTEBOOK CELL 7
-    columns_Output = [
-        'Category Code', 'Brand', 'Brand Description', 'Item Code', 
-        'Item Name', 'Product Description', 'Warehouse', 'Location', 
-        'Sales Quantity', 'Sales Value', 'Total Inventory', 'Sellable Inventory',	
-        'Inventory Reserved (either against order / transit)', 'Order Date'
+    # EXACT MATCH RAW INPUT COLUMNS MATRICES
+    sales_specific_cols = [
+        'Site', 'Site Name', 'Sales Office', 'Article', 'Item Description', 
+        'Article Name', 'Family Name', 'Sub-Family Name', 'Category Name', 
+        'Brand Name', 'RRP Price', 'Invoice Created On', 'Invoice Quantity', 'Amount@RRP'
     ]
 
-    # Initialize columns if not present inside source files (Notebook Cell 11 logic)
-    for col in columns_Output:
-        if col not in df_stock.columns: df_stock[col] = ""
+    stock_specific_cols = [
+        'Article', 'Article Name', 'Item Description', 'Site', 'Site Name', 
+        'Location Name', 'Family Name', 'Sub-Family Name', 'Brand Name', 
+        'Category Name', 'Physical Stock', 'Consignment Stock'
+    ]
+
+    # Initialize columns if missing inside source frames to prevent runtime key errors safely
+    for col in sales_specific_cols:
         if col not in df_sales.columns: df_sales[col] = ""
+            
+    for col in stock_specific_cols:
+        if col not in df_stock.columns: df_stock[col] = ""
 
-    # Slicing columns (Notebook Cell 12 logic)
-    df_stock = df_stock[columns_Output].copy()
-    df_sales = df_sales[columns_Output].copy()
+    # Slice clean structured working views matching your exact inputs
+    df_sales_clean = df_sales[sales_specific_cols].copy()
+    df_stock_clean = df_stock[stock_specific_cols].copy()
 
-    # Independent Mapping by Brand relational map entries
-    df_sales_mapped = df_sales.merge(email_master, how='inner', on='Brand')
-    df_stock_mapped = df_stock.merge(email_master, how='inner', on='Brand')
+    # Standardize comparison keys to perform clean case-insensitive mappings
+    df_sales_clean['Article Name'] = df_sales_clean['Article Name'].astype(str).str.strip().str.upper()
+    df_stock_clean['Article Name'] = df_stock_clean['Article Name'].astype(str).str.strip().str.upper()
 
-    all_emails = set(df_sales_mapped['Email'].dropna().unique()).union(set(df_stock_mapped['Email'].dropna().unique()))
+    # Map the master recipient emails directly onto the data rows using Article Name keys
+    df_sales_clean['Email'] = df_sales_clean['Article Name'].map(email_map)
+    df_stock_clean['Email'] = df_stock_clean['Article Name'].map(email_map)
+
+    # Intersect all matched unique partner email keys
+    all_emails = set(df_sales_clean['Email'].dropna().unique()).union(set(df_stock_clean['Email'].dropna().unique()))
 
     processed_count = 0
     zip_buffer_dict = {}
     email_delivery_report = []
 
-    # Local Directory configuration for Windows MAPI native routing pass
+    # Local Windows Environment detection configuration
     use_local_win = (execution_mode == "Local Desktop App (Outlook)") and (os.name == 'nt')
     if send_email and use_local_win:
         import win32com.client as win32
@@ -140,15 +128,14 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         if email_str.lower() in ['unmapped@company.com', 'na', 'nan', '', 'na;na']:
             continue
 
-        # Extract subsets matching current supplier map target index
-        sales_final = df_sales_mapped[df_sales_mapped['Email'] == email_str].copy()
-        stock_final = df_stock_mapped[df_stock_mapped['Email'] == email_str].copy()
+        sales_final = df_sales_clean[df_sales_clean['Email'] == email_str].copy()
+        stock_final = df_stock_clean[df_stock_clean['Email'] == email_str].copy()
 
         # Format timestamps cleanly into standard text short dates for Excel display
-        if not sales_final.empty and 'Order Date' in sales_final.columns:
-            sales_final['Order Date'] = pd.to_datetime(sales_final['Order Date']).dt.date
+        if not sales_final.empty and 'Invoice Created On' in sales_final.columns:
+            sales_final['Invoice Created On'] = pd.to_datetime(sales_final['Invoice Created On']).dt.date
 
-        # Drop link tags before writing parameters out
+        # Drop runtime routing flags before output file creation
         sales_final = sales_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
         stock_final = stock_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
 
@@ -170,7 +157,6 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         # ─── ✉️ OUTBOUND DISPATCH INTERFACE ROUTER BLOCK ───
         if send_email:
             if use_local_win:
-                # Mode A: Connect directly to your running Windows Outlook app session (Password-Free)
                 try:
                     local_file_path = os.path.abspath(os.path.join(temp_dir, clean_filename))
                     with open(local_file_path, "wb") as f:
@@ -188,7 +174,6 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
                 except Exception as local_err:
                     email_delivery_report.append({"Partner Email": email_str, "Status": f"Desktop Integration Error: {str(local_err)}"})
             else:
-                # Mode B: Connect directly to Cloud SaaS SMTP endpoints
                 if smtp_settings:
                     success, cloud_msg = send_cloud_smtp_email(
                         smtp_settings['server'], smtp_settings['port'], smtp_settings['email'], smtp_settings['password'],
@@ -199,7 +184,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
                         "Status": "Sent via Cloud Server SMTP" if success else f"Cloud Security Block: {cloud_msg}"
                     })
 
-    # Flush local script caching directory after delivery run concludes
+    # Flush local disk folder parameters upon execution completion loop
     if send_email and use_local_win and os.path.exists(temp_dir):
         for f in os.listdir(temp_dir):
             try: os.remove(os.path.join(temp_dir, f))
@@ -240,12 +225,12 @@ def render_ui():
     with col_u2:
         email_master_file = st.file_uploader("Upload Brand Email Master Mapping Sheet", type=["xlsx", "csv"], key="sns_email")
         
-    st.markdown("### 📅 Filter Constraints (Order Date)")
+    st.markdown("### 📅 Filter Constraints (Invoice Created On)")
     date_col1, date_col2 = st.columns(2)
     with date_col1:
         start_date = st.date_input("Reporting From Date:", value=datetime.date(2026, 5, 1), key="sns_start")
     with date_col2:
-        end_date = st.date_input("Reporting To Date:", value=datetime.date(2026, 5, 24), key="sns_end")
+        end_date = st.date_input("Reporting To Date:", value=datetime.date(2026, 5, 31), key="sns_end")
 
     st.markdown("### ✉️ Email Broadcast Template Configuration")
     send_email = st.checkbox("Enable Automated Email Distribution Loop?", value=False, key="sns_send")
