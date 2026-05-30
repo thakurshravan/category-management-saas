@@ -79,19 +79,14 @@ def render_manager_dashboard():
         # 3. Execution Trigger
         if st.button("Generate All Links Simultaneously", type="primary"):
             if vendors_input:
-                # Clean up input strings and separate them into a python list array
                 vendor_list = [v.strip() for v in vendors_input.split(",") if v.strip()]
-                
                 st.success(f"🎉 Instantly Generated {len(vendor_list)} Security-Locked Portals!")
                 
-                # --- FIXED LIVE PRODUCTION DOMAIN ---
                 base_url = "https://category-management-saas-fwpgyjvewktqf4repbby8j.streamlit.app"
                 
-                # Display output inside an interactive loop table
                 generated_records = []
                 for vendor in vendor_list:
                     clean_slug = vendor.lower().replace(" ", "-")
-                    # Embed target expiration key right inside the query string URL parameters
                     public_url = f"{base_url}/?view=portal&vendor={clean_slug}&exp={expiry_date}"
                     
                     generated_records.append({
@@ -100,10 +95,8 @@ def render_manager_dashboard():
                         "Secure Upload Link": public_url
                     })
                 
-                # Render results out cleanly
                 res_df = pd.DataFrame(generated_records)
                 st.dataframe(res_df, use_container_width=True, hide_index=True)
-                
                 st.info("💡 **SaaS Copy Tip:** You can highlight and copy these links directly out of the grid table above to paste into your vendor email broadcasts.")
             else:
                 st.warning("Please input at least one brand name to generate links.")
@@ -116,6 +109,27 @@ def render_manager_dashboard():
             st.info("Awaiting uploads. No valid data records dropped off in cloud paths yet.")
         else:
             st.success(f"🔔 Online: {len(cloud_files)} supplier data sheets waiting in cloud folders.")
+            
+            # --- 🛠️ NEW: CENTRAL PATH RECORDS PURGE SECTION ---
+            with st.expander("🚨 Purge Inward Directory for New Cycle Actions", expanded=False):
+                st.warning("Warning: This operation drops all verified data sets currently loaded in the staging buffer.")
+                confirm_purge = st.checkbox("Confirm: I wish to permanently delete all active data files listed below.")
+                
+                if st.button("Delete All Pending Files", type="primary", use_container_width=True):
+                    if confirm_purge:
+                        deleted_count = 0
+                        for target_f in cloud_files:
+                            try:
+                                os.remove(os.path.join(CLOUD_STORAGE_DIR, target_f))
+                                deleted_count += 1
+                            except Exception as ex:
+                                st.error(f"Failed to clear resource object '{target_f}': {ex}")
+                        st.success(f"Wipe Completed! {deleted_count} files removed. Staging environment is ready for next cycle.")
+                        st.rerun()
+                    else:
+                        st.error("Purge Rejected: Please verify the checkbox rule verification above to process deletion layout triggers.")
+            st.markdown("---")
+
             combined_dfs = []
             for file_name in cloud_files:
                 file_path = os.path.join(CLOUD_STORAGE_DIR, file_name)
@@ -144,7 +158,6 @@ def render_public_supplier_portal(url_params):
     target_vendor = url_params.get("vendor", "Valued Supplier").upper().replace("-", " ")
     expiry_param = url_params.get("exp", "never")
     
-    # --- TIME GATE EXPIRATION CHECKER ---
     is_expired = False
     if expiry_param != "never":
         try:
@@ -160,7 +173,6 @@ def render_public_supplier_portal(url_params):
         st.markdown(f"The inventory submission window for this cycle closed on **{expiry_param}**. Please reach out directly to your Category Manager to request an extension or a refreshed link portal.")
         st.stop() 
 
-    # --- ACTIVE PORTAL STATE ---
     st.title(f"📦 Secure Vendor Inventory Upload Portal")
     st.subheader(f"Account Portfolio Connection: {target_vendor}")
     if expiry_param != "never":
