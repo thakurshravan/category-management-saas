@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import io
 import datetime
+import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -13,19 +14,23 @@ from email import encoders
 # ==========================================================
 # 🏷️ MODULE METADATA & ENTRY REGISTRATION FOR STREAMLIT SaaS
 # ==========================================================
-TOOL_NAME = "Enterprise Reporting & Distribution Suite"
-TOOL_ICON = "🚀"
+TOOL_NAME = "SNS Reporting Tool"
+TOOL_ICON = "📈"
 
 def clean_headers(df):
     """Strips hidden spaces from input spreadsheet headers securely."""
     df.columns = [str(c).strip() for c in df.columns]
     return df
 
-def send_partner_email(smtp_server, smtp_port, sender_email, sender_password, recipient_email, subject, body_text, file_name, file_bytes):
-    """SaaS Custom SMTP automation engine that scales dynamically based on current user settings."""
+def send_cloud_smtp_email(recipient_email, subject, body_text, file_name, file_bytes):
+    """Fallback secure SMTP automation engine when tool is running in the cloud."""
+    email_creds = st.secrets.get("email_auth", {})
+    if not email_creds:
+        return False, "SMTP configuration keys are missing from Streamlit secrets dashboard parameters."
+        
     try:
         msg = MIMEMultipart()
-        msg['From'] = sender_email
+        msg['From'] = email_creds.get("sender_email")
         msg['To'] = recipient_email
         msg['Subject'] = subject
         
@@ -37,20 +42,19 @@ def send_partner_email(smtp_server, smtp_port, sender_email, sender_password, re
         part.add_header('Content-Disposition', f'attachment; filename="{file_name}"')
         msg.attach(part)
         
-        # Authenticate using current subscriber settings inputs dynamically
-        server = smtplib.SMTP(smtp_server, int(smtp_port))
+        server = smtplib.SMTP(email_creds.get("smtp_server", "smtp.office365.com"), int(email_creds.get("smtp_port", 587)))
         server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, recipient_email, msg.as_string())
+        server.login(email_creds.get("sender_email"), email_creds.get("sender_password"))
+        server.sendmail(email_creds.get("sender_email"), recipient_email, msg.as_string())
         server.quit()
-        return True, "Success"
+        return True, "Sent via Cloud SMTP Relay"
     except Exception as error:
         return False, str(error)
 
-def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body, start_date, end_date, smtp_settings=None):
-    """Executes isolated sheet splits matching exact partner specifications."""
+def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body, start_date, end_date):
+    """Executes isolated sheet splits matching exact partner specifications with environment auto-detection."""
     
-    # Load Input Data Streams Safely from Memory Buffers
+    # 1. Loading Input Data Streams Safely from Memory Buffers
     df_sales = pd.read_excel(sales_file) if sales_file.name.endswith('.xlsx') else pd.read_csv(sales_file)
     df_stock = pd.read_excel(stock_file) if stock_file.name.endswith('.xlsx') else pd.read_csv(stock_file)
     email_master = pd.read_excel(email_master_file) if email_master_file.name.endswith('.xlsx') else pd.read_csv(email_master_file)
@@ -59,7 +63,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     df_stock = clean_headers(df_stock)
     email_master = clean_headers(email_master)
 
-    # Standardize common join key column across all datasets
+    # Standardize 'Article Name' validation join key across all datasets
     for target_df in [df_sales, df_stock, email_master]:
         if 'Article Name' in target_df.columns:
             target_df['Article Name'] = target_df['Article Name'].astype(str).str.strip().str.upper()
@@ -72,7 +76,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     else:
         raise ValueError("The uploaded Email Master sheet must contain exact 'Article Name' and 'Email' headers.")
 
-    # Strict Date Filtering Layer on Sales Sheet via "Invoice Created On"
+    # 2. Strict Date Filtering Layer on Sales Sheet via "Invoice Created On"
     date_col = 'Invoice Created On'
     if date_col in df_sales.columns:
         df_sales[date_col] = pd.to_datetime(df_sales[date_col], errors='coerce')
@@ -81,7 +85,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
             (df_sales[date_col].dt.date <= end_date)
         ].copy()
 
-    # Structural Renaming & Data Alignment
+    # 3. Structural Renaming & Data Alignment
     columns_rename = {
         'Physical inventory': 'Physical Stock',
         'Location': 'Location Name'
@@ -104,11 +108,10 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
 
     for col in sales_specific_cols:
         if col not in df_sales.columns: df_sales[col] = np.nan
-            
     for col in stock_specific_cols:
         if col not in df_stock.columns: df_stock[col] = np.nan
 
-    # Independent Merging
+    # 4. Independent Merging
     df_sales_mapped = df_sales[sales_specific_cols].merge(email_master, how='inner', on='Article Name')
     df_stock_mapped = df_stock[stock_specific_cols].merge(email_master, how='inner', on='Article Name')
 
@@ -118,7 +121,17 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     zip_buffer_dict = {}
     email_delivery_report = []
 
-    # Segment and build workbooks individually for each supplier email group
+    # 🚨 SYSTEM ENVIRONMENT DETECTOR 
+    # Check if we are running locally on Windows OS or deployed in Linux Cloud Server container
+    is_local_windows = os.name == 'nt'
+    
+    if send_email and is_local_windows:
+        import win32com.client as win32
+        temp_dir = "./temp_sns_outbound/"
+        if not os.path.exists(temp_dir):
+            os.makedirs(temp_dir)
+
+    # 5. Segment and build workbooks individually for each supplier email group
     for email in all_emails:
         email_str = str(email).strip()
         if email_str.lower() in ['unmapped@company.com', 'na', 'nan', '', 'na;na']:
@@ -147,47 +160,47 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         zip_buffer_dict[clean_filename] = excel_bytes
         processed_count += 1
 
-        # DYNAMIC EMAIL DISPATCH LOOP
-        if send_email and smtp_settings:
-            mail_success, status_msg = send_partner_email(
-                smtp_server=smtp_settings['server'],
-                smtp_port=smtp_settings['port'],
-                sender_email=smtp_settings['email'],
-                sender_password=smtp_settings['password'],
-                recipient_email=email_str,
-                subject=mail_subject,
-                body_text=mail_body,
-                file_name=clean_filename,
-                file_bytes=excel_bytes
-            )
-            email_delivery_report.append({
-                "Partner Email": email_str,
-                "Status": "Sent Successfully" if mail_success else f"Failed: {status_msg}"
-            })
+        # ─── ✉️ CROSS-COMPATIBLE DISPATCH ENGINE LOOP ───
+        if send_email:
+            if is_local_windows:
+                # PATH A: Local Mode -> Route via Windows Desktop MAPI (No passwords needed)
+                try:
+                    local_file_path = os.path.abspath(os.path.join(temp_dir, clean_filename))
+                    with open(local_file_path, "wb") as f:
+                        f.write(excel_bytes)
+                    
+                    outlook = win32.Dispatch('outlook.application')
+                    message = outlook.CreateItem(0)
+                    message.Subject = mail_subject
+                    message.Body = mail_body
+                    message.To = email_str
+                    message.Attachments.Add(local_file_path)
+                    message.Send()
+                    
+                    email_delivery_report.append({"Partner Email": email_str, "Status": "Sent via Local Outlook App"})
+                except Exception as local_err:
+                    email_delivery_report.append({"Partner Email": email_str, "Status": f"Desktop Error: {str(local_err)}"})
+            else:
+                # PATH B: Cloud Server Mode -> Route via Secure Office 365 Network SMTP Relay using Secrets token
+                success, cloud_msg = send_cloud_smtp_email(email_str, mail_subject, mail_body, clean_filename, excel_bytes)
+                email_delivery_report.append({
+                    "Partner Email": email_str, 
+                    "Status": "Sent via Cloud Server Integration" if success else f"Cloud Server Error: {cloud_msg}"
+                })
+
+    # Clear out local file caching parameters if running in local desktop pass
+    if send_email and is_local_windows and os.path.exists(temp_dir):
+        for f in os.listdir(temp_dir):
+            try: os.remove(os.path.join(temp_dir, f))
+            except: pass
 
     return processed_count, zip_buffer_dict, email_delivery_report
 
 def render_ui():
     st.title(f"{TOOL_ICON} {TOOL_NAME}")
-    st.subheader("Process transactional allocations and handle partner distribution loops.")
+    st.subheader("Smart Desktop-Cloud Hybrid Architecture Engine.")
     st.markdown("---")
     
-    # 🌟 NEW: THE SUBSCRIPTION SIDEBAR WHITE-LABEL PANEL
-    with st.sidebar:
-        st.header("🔑 Client Gateway Authentication")
-        
-        # Pull system credentials dynamically fallback securely if not present
-        sys_auth = st.secrets.get("email_auth", {})
-        
-        st.subheader("Configuration Settings")
-        client_smtp_server = st.text_input("SMTP Network Gateway:", value=sys_auth.get("smtp_server", "smtp.office365.com"))
-        client_smtp_port = st.number_input("SMTP Port connection:", value=int(sys_auth.get("smtp_port", 587)))
-        client_sender_email = st.text_input("Corporate Username Email ID:", value=sys_auth.get("sender_email", "shravan.kumar@jumbo.ae"))
-        client_sender_password = st.text_input("App-Authentication Password Token:", value=sys_auth.get("sender_password", "lhhclrzfbnphgkzp"), type="password")
-        
-        st.info("💡 Monthly Subscribers can adjust these sidebar credentials to run distributions directly through their own corporate mail gateways.")
-
-    # Main UI Dashboard Intake Panels
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         sales_file = st.file_uploader("Upload Raw Sales Transactions Sheet", type=["xlsx", "csv"], key="sns_sales")
@@ -222,20 +235,11 @@ def render_ui():
 
     if st.button("⚡ Execute Reporting Automation Loops", type="primary", use_container_width=True, key="sns_run"):
         if sales_file and stock_file and email_master_file:
-            with st.spinner("Processing calculations and preparing distribution sheets..."):
+            with st.spinner("Processing deep matrix calculations and routing distributions..."):
                 try:
-                    # Package the sidebar runtime credentials state variables cleanly
-                    active_smtp_package = {
-                        'server': client_smtp_server,
-                        'port': client_smtp_port,
-                        'email': client_sender_email,
-                        'password': client_sender_password
-                    }
-                    
                     count, generated_files, email_report = run_sns_process(
                         sales_file, stock_file, email_master_file, 
-                        send_email, mail_subject, mail_body, start_date, end_date,
-                        smtp_settings=active_smtp_package
+                        send_email, mail_subject, mail_body, start_date, end_date
                     )
                     
                     if count > 0:
