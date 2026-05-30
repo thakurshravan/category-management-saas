@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import io
 import datetime
+import os
 
 # ==========================================================
 # 🏷️ MODULE METADATA & ENTRY REGISTRATION FOR STREAMLIT SaaS
@@ -60,7 +61,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     df_sales = df_sales.rename(columns=columns_rename)
     df_stock = df_stock.rename(columns=columns_rename)
 
-    # 🚨 EXACT REFINED COLUMN PICKING MATRIX - FITS YOUR EXCEL MATCH
+    # EXACT REFINED COLUMN PICKING MATRIX
     sales_specific_cols = [
         'Site', 'Site Name', 'Sales Office', 'Article', 'Item Description', 
         'Article Name', 'Family Name', 'Sub-Family Name', 'Category Name', 
@@ -73,24 +74,31 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         'Category Name', 'Physical Stock', 'Consignment Stock'
     ]
 
-    # Safe Verification Layer: Initialize missing keys with blank markers to bypass index failures
+    # Initialize missing keys with blank markers to bypass index failures safely
     for col in sales_specific_cols:
-        if col not in df_sales.columns:
-            df_sales[col] = np.nan
+        if col not in df_sales.columns: df_sales[col] = np.nan
             
     for col in stock_specific_cols:
-        if col not in df_stock.columns:
-            df_stock[col] = np.nan
+        if col not in df_stock.columns: df_stock[col] = np.nan
 
-    # 4. Independent Merging (Prevents 'Reindexing Objects' errors completely)
+    # 4. Independent Merging
     df_sales_mapped = df_sales[sales_specific_cols].merge(email_master, how='inner', on='Article Name')
     df_stock_mapped = df_stock[stock_specific_cols].merge(email_master, how='inner', on='Article Name')
 
-    # Intersect uniquely matched supplier emails found across the spreadsheets
     all_emails = set(df_sales_mapped['Email'].dropna().unique()).union(set(df_stock_mapped['Email'].dropna().unique()))
 
     processed_count = 0
     zip_buffer_dict = {}
+    email_delivery_report = []
+
+    # Conditionally import win32com only if local execution email option is toggled on
+    if send_email:
+        import win32com.client as win32
+
+    # Temporary local folder to cache out attachments before passing pointers to Outlook windows
+    temp_dir = "./temp_sns_outbound/"
+    if send_email and not os.path.exists(temp_dir):
+        os.makedirs(temp_dir)
 
     # 5. Segment and build workbooks individually for each supplier email group
     for email in all_emails:
@@ -101,39 +109,57 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         sales_final = df_sales_mapped[df_sales_mapped['Email'] == email_str].copy()
         stock_final = df_stock_mapped[df_stock_mapped['Email'] == email_str].copy()
 
-        # Format timestamps cleanly into standard text-based short dates for Excel display
         if not sales_final.empty and 'Invoice Created On' in sales_final.columns:
             sales_final['Invoice Created On'] = pd.to_datetime(sales_final['Invoice Created On']).dt.date
 
-        # Drop the technical relational 'Email' column before writing out to partners
         sales_final = sales_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
         stock_final = stock_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
 
-        # Skip compilation loop if both calculations return completely empty fragments
         if sales_final.empty and stock_final.empty:
             continue
 
-        # Compile separate clean sheets inside a unified workbook directly in memory
+        # Build clean filenames
+        clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
+        
+        # Compile directly in memory for the ZIP down-stream bundle download anchor
         excel_out = io.BytesIO()
         with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
             sales_final.to_excel(writer, sheet_name='Sales Report', index=False)
             stock_final.to_excel(writer, sheet_name='Stock Report', index=False)
             
         excel_bytes = excel_out.getvalue()
-        
-        # Remove parentheses or quotes from email keys to make clean file names
-        clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
         zip_buffer_dict[clean_filename] = excel_bytes
         processed_count += 1
 
-    return processed_count, zip_buffer_dict
+        # ─── ✉️ NATIVE LOCAL DESKTOP OUTLOOK DISPATCH LAYER ───
+        if send_email:
+            try:
+                local_file_path = os.path.abspath(os.path.join(temp_dir, clean_filename))
+                with open(local_file_path, "wb") as f:
+                    f.write(excel_bytes)
+                
+                # Interface with active local Windows Outlook instance application
+                outlook = win32.Dispatch('outlook.application')
+                message = outlook.CreateItem(0)
+                message.Subject = mail_subject
+                message.Body = mail_body
+                message.To = email_str
+                
+                # Attach the cached spreadsheet file layout directly
+                message.Attachments.Add(local_file_path)
+                message.Send()
+                
+                email_delivery_report.append({"Partner Email": email_str, "Status": "Sent via Desktop Outlook"})
+            except Exception as error:
+                email_delivery_report.append({"Partner Email": email_str, "Status": f"Failed: {str(error)}"})
+
+    return processed_count, zip_buffer_dict, email_delivery_report
 
 def render_ui():
     st.title(f"{TOOL_ICON} {TOOL_NAME}")
-    st.subheader("Generate split supplier sheets mapped via Article Name keys.")
+    st.subheader("Generate split partner sheets mapped via Article Name keys with automated emails.")
     st.markdown("---")
     
-    # Structural File Intake Dashboard Panels
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         sales_file = st.file_uploader("Upload Raw Sales Transactions Sheet", type=["xlsx", "csv"], key="sns_sales")
@@ -149,7 +175,7 @@ def render_ui():
         end_date = st.date_input("Reporting To Date:", value=datetime.date(2026, 5, 31), key="sns_end")
 
     st.markdown("### ✉️ Email Broadcast Template Configuration")
-    send_email = st.checkbox("Enable Automated Server Email Distribution Loop?", value=False, key="sns_send")
+    send_email = st.checkbox("Enable Automated Local Desktop Outlook Distribution Loop?", value=False, key="sns_send", help="Only select if running application module natively on Windows.")
 
     if send_email:
         default_body_str = (
@@ -168,15 +194,20 @@ def render_ui():
 
     if st.button("⚡ Execute Reporting Automation Loops", type="primary", use_container_width=True, key="sns_run"):
         if sales_file and stock_file and email_master_file:
-            with st.spinner("Processing deep matrix calculations..."):
+            with st.spinner("Processing calculations and preparing distribution sheets..."):
                 try:
-                    count, generated_files = run_sns_process(
+                    count, generated_files, email_report = run_sns_process(
                         sales_file, stock_file, email_master_file, 
                         send_email, mail_subject, mail_body, start_date, end_date
                     )
                     
                     if count > 0:
                         st.success(f"🎉 Process Complete! Successfully generated clean data splits for {count} unique suppliers.")
+                        
+                        if send_email and email_report:
+                            st.markdown("### 📬 Local Distribution Tracking Grid")
+                            rep_df = pd.DataFrame(email_report)
+                            st.dataframe(rep_df, use_container_width=True, hide_index=True)
                         
                         if generated_files:
                             import zipfile
