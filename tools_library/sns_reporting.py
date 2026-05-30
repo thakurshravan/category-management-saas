@@ -19,14 +19,14 @@ def clean_headers(df):
 def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body):
     """Executes column harmonization, data splitting, and reporting distributions."""
     
-    # 1. Loading Input Data Streams from Buffers
+    # 1. Loading Input Data Streams from Buffers Safely
     df_sales = pd.read_excel(sales_file) if sales_file.name.endswith('.xlsx') else pd.read_csv(sales_file)
     df_stock = pd.read_excel(stock_file) if stock_file.name.endswith('.xlsx') else pd.read_csv(stock_file)
     email_master = pd.read_excel(email_master_file) if email_master_file.name.endswith('.xlsx') else pd.read_csv(email_master_file)
     
     df_sales = clean_headers(df_sales)
     df_stock = clean_headers(df_stock)
-    email_master = clean_headers(df_master)
+    email_master = clean_headers(email_master) # Fixed typo variable pointer here
 
     # 2. Standardized MCH Schema Mappings
     columns_Output = [
@@ -37,7 +37,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     ]
 
     columns_rename = {
-        'Item number': 'Item Code', 'ItemId': 'Item Code', 'Item number': 'Item Code',
+        'Item number': 'Item Code', 'ItemId': 'Item Code',
         'Item Name': 'Item Name', 'ItemName': 'Item Name',
         'Description': 'Product Description', 'ProductDesc': 'Product Description',
         'Retail Brand': 'Brand', 'BrandName': 'Brand',
@@ -94,8 +94,6 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
 
     grouped = combined_df.groupby('Email')
     processed_count = 0
-
-    # Dictionary to save raw byte streams for web downloads
     zip_buffer_dict = {}
 
     for email_key, group_item in grouped:
@@ -108,11 +106,10 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         sales_sheet = sales_sheet[[c for c in sales_specific_cols if c in sales_sheet.columns]].dropna(how='all')
         stock_sheet = stock_sheet[[c for c in stock_specific_cols if c in stock_sheet.columns]].dropna(how='all')
 
-        # Skip writing files if both sheets are completely empty
         if sales_sheet.empty and stock_sheet.empty:
             continue
 
-        # In-memory byte array compilation
+        # In-memory Excel compilation loop
         excel_out = io.BytesIO()
         with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
             sales_sheet.to_excel(writer, sheet_name='Sales Report', index=False)
@@ -122,12 +119,6 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         zip_buffer_dict[f"SNS_Report_{email_key}.xlsx"] = excel_bytes
         processed_count += 1
 
-        # ─── SERVER-SIDE EMAIL HOOK DISPATCHER ───
-        if send_email:
-            # Here is where your server-side mail provider hooks in (SendGrid / AWS SES / SMTP)
-            # pass mail_subject, mail_body, email_key, and excel_bytes to your automated mailing function
-            pass
-
     return processed_count, zip_buffer_dict
 
 def render_ui():
@@ -135,7 +126,7 @@ def render_ui():
     st.subheader("Generate split supplier sheets and configure automated distributions.")
     st.markdown("---")
     
-    # Layout Component File Uploaders (Exclusions master completely eliminated)
+    # Layout Component File Uploaders
     col_u1, col_u2 = st.columns(2)
     with col_u1:
         sales_file = st.file_uploader("Upload Raw Sales Transactions Sheet", type=["xlsx", "csv"], key="sns_sales")
@@ -157,11 +148,8 @@ def render_ui():
         default_body_str = (
             "Dear valued partner,\n\n"
             "Please find attached your Sales and Stock Performance Report covering the requested window.\n\n"
-            "Note - Stock nomenclature definitions:\n"
-            "- Total Inventory: Total asset quantity logged within the system network layers.\n"
-            "- Sellable Inventory: Active sellable items currently on floor.\n\n"
             "Thanks,\n"
-            "Team Jumbo Electronics"
+            "Category Management Team"
         )
         mail_subject = st.text_input("Email Global Subject Line:", value="Sales & Stocks Performance Report Update", key="sns_subject_input")
         mail_body = st.text_area("Email Global Body Text Content:", value=default_body_str, height=180, key="sns_body_input")
@@ -182,7 +170,6 @@ def render_ui():
                     
                     st.success(f"🎉 Process Complete! Successfully generated multi-tab workbook allocations for {count} suppliers.")
                     
-                    # Provide an immediate single-tab consolidated workbook download bundle back to admin view
                     if generated_files:
                         import zipfile
                         zip_out = io.BytesIO()
