@@ -37,7 +37,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     if 'Article Name' in email_master.columns:
         email_master = email_master.drop_duplicates(subset=['Article Name'], keep='first')
         
-    # Crucial: Isolate the Email Master to ONLY Article Name and Email columns to avoid name collisions
+    # 🚨 CRITICAL: Isolate Email Master to ONLY avoid structural header name overlaps
     if 'Email' in email_master.columns and 'Article Name' in email_master.columns:
         email_master = email_master[['Article Name', 'Email']]
 
@@ -108,7 +108,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         sales_sheet.reset_index(drop=True, inplace=True)
         stock_sheet.reset_index(drop=True, inplace=True)
 
-        # Build clean column filtering sequences with completely unique objects
+        # 🚨 FIX: Build clean column filtering sequences with completely unique objects
         sales_cols_clean = list(dict.fromkeys([c for c in sales_specific_cols if c in sales_sheet.columns]))
         stock_cols_clean = list(dict.fromkeys([c for c in stock_specific_cols if c in stock_sheet.columns]))
 
