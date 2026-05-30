@@ -28,16 +28,16 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     df_stock = clean_headers(df_stock)
     email_master = clean_headers(email_master)
 
-    # Standardize 'Article Name' validation join key across all datasets
+    # 🚨 STRUCTURAL CORRECTION: Force absolute string-case standardization to avoid key misses
     for target_df in [df_sales, df_stock, email_master]:
         if 'Article Name' in target_df.columns:
-            target_df['Article Name'] = target_df['Article Name'].astype(str).str.strip()
+            target_df['Article Name'] = target_df['Article Name'].astype(str).str.strip().str.upper()
 
-    # Deduplicate Email Master by 'Article Name' to prevent cross-join explosions
+    # Deduplicate Email Master by 'Article Name' to prevent cross-join index expansions
     if 'Article Name' in email_master.columns:
         email_master = email_master.drop_duplicates(subset=['Article Name'], keep='first')
         
-    # 🚨 CRITICAL: Isolate Email Master to ONLY avoid structural header name overlaps
+    # Isolate Email Master to avoid structural header name overlaps
     if 'Email' in email_master.columns and 'Article Name' in email_master.columns:
         email_master = email_master[['Article Name', 'Email']]
 
@@ -75,6 +75,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     # Fallback string assignments for unmapped assets
     if 'Email' not in combined_df.columns:
         combined_df['Email'] = 'unmapped@company.com'
+    
     combined_df['Email'] = combined_df['Email'].fillna('unmapped@company.com').astype(str).str.strip()
 
     # Exact column matching from your uploaded target layout sheets
@@ -94,7 +95,9 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     zip_buffer_dict = {}
 
     for email_key, group_item in grouped:
-        if email_key in ['unmapped@company.com', 'NA', 'nan', '', 'NA;NA']:
+        # Clean string references for standard exclusion safety filters
+        clean_key = str(email_key).lower().strip()
+        if 'unmapped' in clean_key or clean_key in ['na', 'nan', '', 'na;na']:
             continue
             
         sales_sheet = group_item[group_item['Report Type'] == 'Sales'].copy()
@@ -108,7 +111,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         sales_sheet.reset_index(drop=True, inplace=True)
         stock_sheet.reset_index(drop=True, inplace=True)
 
-        # 🚨 FIX: Build clean column filtering sequences with completely unique objects
+        # Build clean column filtering sequences with completely unique objects
         sales_cols_clean = list(dict.fromkeys([c for c in sales_specific_cols if c in sales_sheet.columns]))
         stock_cols_clean = list(dict.fromkeys([c for c in stock_specific_cols if c in stock_sheet.columns]))
 
@@ -127,7 +130,10 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
             stock_sheet.to_excel(writer, sheet_name='Stock Report', index=False)
             
         excel_bytes = excel_out.getvalue()
-        zip_buffer_dict[f"SNS_Report_{email_key}.xlsx"] = excel_bytes
+        
+        # Format names file values safely
+        clean_file_name = f"SNS_Report_{email_key}.xlsx".replace("'", "").replace("(", "").replace(")", "")
+        zip_buffer_dict[clean_file_name] = excel_bytes
         processed_count += 1
 
     return processed_count, zip_buffer_dict
@@ -179,7 +185,10 @@ def render_ui():
                         send_email, mail_subject, mail_body, start_date, end_date
                     )
                     
-                    st.success(f"🎉 Process Complete! Successfully generated clean data splits for {count} unique suppliers.")
+                    if count > 0:
+                        st.success(f"🎉 Process Complete! Successfully generated clean data splits for {count} unique suppliers.")
+                    else:
+                        st.warning("⚠️ No matching records found. Verify that your Reporting From/To date selection covers the values present inside your Sales spreadsheet file.")
                     
                     if generated_files:
                         import zipfile
