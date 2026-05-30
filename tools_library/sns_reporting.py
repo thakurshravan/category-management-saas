@@ -17,7 +17,7 @@ def clean_headers(df):
     return df
 
 def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body, start_date, end_date):
-    """Executes column harmonization, date filtering, and multi-sheet reporting generation."""
+    """Executes clean, isolated separate sheet mappings using exact matching column sets."""
     
     # 1. Loading Input Data Streams Safely from Memory Buffers
     df_sales = pd.read_excel(sales_file) if sales_file.name.endswith('.xlsx') else pd.read_csv(sales_file)
@@ -28,18 +28,20 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
     df_stock = clean_headers(df_stock)
     email_master = clean_headers(email_master)
 
-    # 🚨 STRUCTURAL CORRECTION: Force absolute string-case standardization to avoid key misses
+    # Standardize 'Article Name' validation join key across all datasets
     for target_df in [df_sales, df_stock, email_master]:
         if 'Article Name' in target_df.columns:
             target_df['Article Name'] = target_df['Article Name'].astype(str).str.strip().str.upper()
 
-    # Deduplicate Email Master by 'Article Name' to prevent cross-join index expansions
+    # Deduplicate Email Master by 'Article Name' to prevent cross-join array mutations
     if 'Article Name' in email_master.columns:
         email_master = email_master.drop_duplicates(subset=['Article Name'], keep='first')
         
-    # Isolate Email Master to avoid structural header name overlaps
+    # Isolate Email Master columns exclusively to block cross-file column name collisions
     if 'Email' in email_master.columns and 'Article Name' in email_master.columns:
         email_master = email_master[['Article Name', 'Email']]
+    else:
+        raise ValueError("The uploaded Email Master sheet must contain exact 'Article Name' and 'Email' headers.")
 
     # 2. Strict Date Filtering Layer on Sales Sheet via "Invoice Created On"
     date_col = 'Invoice Created On'
@@ -48,92 +50,80 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
         df_sales = df_sales[
             (df_sales[date_col].dt.date >= start_date) & 
             (df_sales[date_col].dt.date <= end_date)
-        ]
-    
+        ].copy()
+
     # 3. Structural Renaming & Data Alignment
     columns_rename = {
-        'Site': 'Site', 'Location': 'Location Name', 'Location Name': 'Location Name',
-        'Physical Stock': 'Physical Stock', 'Physical inventory': 'Physical Stock',
-        'Moving Average Price': 'Moving Average Price', 'Invoice Qty': 'Invoice Quantity',
-        'Invoice Quantity': 'Invoice Quantity', 'Invoice Net Value': 'Amount@RRP',
-        'Sales Value': 'Amount@RRP', 'Amount@RRP': 'Amount@RRP'
+        'Physical inventory': 'Physical Stock',
+        'Location': 'Location Name'
     }
-
-    df_stock = df_stock.rename(columns=columns_rename)
     df_sales = df_sales.rename(columns=columns_rename)
+    df_stock = df_stock.rename(columns=columns_rename)
 
-    # Add logical tracking tags to segment files during the groupby split loop
-    df_sales['Report Type'] = 'Sales'
-    df_stock['Report Type'] = 'Stock'
-
-    # Combine datasets safely and completely ignore/reset old index tracking positions
-    combined_df = pd.concat([df_sales, df_stock], ignore_index=True)
-    
-    # Merge using the isolated 'Article Name' master map
-    combined_df = combined_df.merge(email_master, how='left', on=['Article Name'])
-    
-    # Fallback string assignments for unmapped assets
-    if 'Email' not in combined_df.columns:
-        combined_df['Email'] = 'unmapped@company.com'
-    
-    combined_df['Email'] = combined_df['Email'].fillna('unmapped@company.com').astype(str).str.strip()
-
-    # Exact column matching from your uploaded target layout sheets
+    # 🚨 EXACT REFINED COLUMN PICKING MATRIX - FITS YOUR EXCEL MATCH
     sales_specific_cols = [
-        'Invoice Created On', 'Sales Office', 'Article', 'Item Description', 
-        'Article Name', 'Family', 'Sub-Family', 'Category', 'Brand', 
-        'Invoice Quantity', 'Amount@RRP'
+        'Site', 'Site Name', 'Sales Office', 'Article', 'Item Description', 
+        'Article Name', 'Family Name', 'Sub-Family Name', 'Category Name', 
+        'Brand Name', 'RRP Price', 'Invoice Created On', 'Invoice Quantity', 'Amount@RRP'
     ]
 
     stock_specific_cols = [
-        'Article', 'Article Name', 'Item Description', 'Site', 'Location Name', 
-        'Family Name', 'Sub-Family Name', 'Brand Name', 'Physical Stock', 'Moving Average Price'
+        'Article', 'Article Name', 'Item Description', 'Site', 'Site Name', 
+        'Location Name', 'Family Name', 'Sub-Family Name', 'Brand Name', 
+        'Category Name', 'Physical Stock', 'Consignment Stock'
     ]
 
-    grouped = combined_df.groupby('Email')
+    # Safe Verification Layer: Initialize missing keys with blank markers to bypass index failures
+    for col in sales_specific_cols:
+        if col not in df_sales.columns:
+            df_sales[col] = np.nan
+            
+    for col in stock_specific_cols:
+        if col not in df_stock.columns:
+            df_stock[col] = np.nan
+
+    # 4. Independent Merging (Prevents 'Reindexing Objects' errors completely)
+    df_sales_mapped = df_sales[sales_specific_cols].merge(email_master, how='inner', on='Article Name')
+    df_stock_mapped = df_stock[stock_specific_cols].merge(email_master, how='inner', on='Article Name')
+
+    # Intersect uniquely matched supplier emails found across the spreadsheets
+    all_emails = set(df_sales_mapped['Email'].dropna().unique()).union(set(df_stock_mapped['Email'].dropna().unique()))
+
     processed_count = 0
     zip_buffer_dict = {}
 
-    for email_key, group_item in grouped:
-        # Clean string references for standard exclusion safety filters
-        clean_key = str(email_key).lower().strip()
-        if 'unmapped' in clean_key or clean_key in ['na', 'nan', '', 'na;na']:
-            continue
-            
-        sales_sheet = group_item[group_item['Report Type'] == 'Sales'].copy()
-        stock_sheet = group_item[group_item['Report Type'] == 'Stock'].copy()
-
-        # Format timestamps cleanly to text-based short dates for clean Excel display
-        if not sales_sheet.empty and 'Invoice Created On' in sales_sheet.columns:
-            sales_sheet['Invoice Created On'] = pd.to_datetime(sales_sheet['Invoice Created On']).dt.date
-
-        # Clear duplicate indices on the subgroup targets
-        sales_sheet.reset_index(drop=True, inplace=True)
-        stock_sheet.reset_index(drop=True, inplace=True)
-
-        # Build clean column filtering sequences with completely unique objects
-        sales_cols_clean = list(dict.fromkeys([c for c in sales_specific_cols if c in sales_sheet.columns]))
-        stock_cols_clean = list(dict.fromkeys([c for c in stock_specific_cols if c in stock_sheet.columns]))
-
-        # Safely slice using the unique column keys list
-        sales_sheet = sales_sheet[sales_cols_clean].dropna(how='all')
-        stock_sheet = stock_sheet[stock_cols_clean].dropna(how='all')
-
-        # Skip compilation loop if both data fragments contain no items
-        if sales_sheet.empty and stock_sheet.empty:
+    # 5. Segment and build workbooks individually for each supplier email group
+    for email in all_emails:
+        email_str = str(email).strip()
+        if email_str.lower() in ['unmapped@company.com', 'na', 'nan', '', 'na;na']:
             continue
 
-        # Compile separate sheets inside a single workbook directly in memory
+        sales_final = df_sales_mapped[df_sales_mapped['Email'] == email_str].copy()
+        stock_final = df_stock_mapped[df_stock_mapped['Email'] == email_str].copy()
+
+        # Format timestamps cleanly into standard text-based short dates for Excel display
+        if not sales_final.empty and 'Invoice Created On' in sales_final.columns:
+            sales_final['Invoice Created On'] = pd.to_datetime(sales_final['Invoice Created On']).dt.date
+
+        # Drop the technical relational 'Email' column before writing out to partners
+        sales_final = sales_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
+        stock_final = stock_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
+
+        # Skip compilation loop if both calculations return completely empty fragments
+        if sales_final.empty and stock_final.empty:
+            continue
+
+        # Compile separate clean sheets inside a unified workbook directly in memory
         excel_out = io.BytesIO()
         with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
-            sales_sheet.to_excel(writer, sheet_name='Sales Report', index=False)
-            stock_sheet.to_excel(writer, sheet_name='Stock Report', index=False)
+            sales_final.to_excel(writer, sheet_name='Sales Report', index=False)
+            stock_final.to_excel(writer, sheet_name='Stock Report', index=False)
             
         excel_bytes = excel_out.getvalue()
         
-        # Format names file values safely
-        clean_file_name = f"SNS_Report_{email_key}.xlsx".replace("'", "").replace("(", "").replace(")", "")
-        zip_buffer_dict[clean_file_name] = excel_bytes
+        # Remove parentheses or quotes from email keys to make clean file names
+        clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
+        zip_buffer_dict[clean_filename] = excel_bytes
         processed_count += 1
 
     return processed_count, zip_buffer_dict
@@ -187,23 +177,23 @@ def render_ui():
                     
                     if count > 0:
                         st.success(f"🎉 Process Complete! Successfully generated clean data splits for {count} unique suppliers.")
-                    else:
-                        st.warning("⚠️ No matching records found. Verify that your Reporting From/To date selection covers the values present inside your Sales spreadsheet file.")
-                    
-                    if generated_files:
-                        import zipfile
-                        zip_out = io.BytesIO()
-                        with zipfile.ZipFile(zip_out, 'w') as zip_f:
-                            for fname, fbytes in generated_files.items():
-                                zip_f.writestr(fname, fbytes)
                         
-                        st.download_button(
-                            label="📥 Download All Generated Partner Workbooks (ZIP Archive)",
-                            data=zip_out.getvalue(),
-                            file_name=f"SNS_Partner_Reports_{datetime.datetime.now().strftime('%Y%m%d')}.zip",
-                            mime="application/zip",
-                            use_container_width=True
-                        )
+                        if generated_files:
+                            import zipfile
+                            zip_out = io.BytesIO()
+                            with zipfile.ZipFile(zip_out, 'w') as zip_f:
+                                for fname, fbytes in generated_files.items():
+                                    zip_f.writestr(fname, fbytes)
+                            
+                            st.download_button(
+                                label="📥 Download All Generated Partner Workbooks (ZIP Archive)",
+                                data=zip_out.getvalue(),
+                                file_name=f"SNS_Partner_Reports_{datetime.datetime.now().strftime('%Y%m%d')}.zip",
+                                mime="application/zip",
+                                use_container_width=True
+                            )
+                    else:
+                        st.warning("⚠️ No matching rows found. Ensure that your From and To dates cover the values inside your Sales spreadsheet data rows.")
                 except Exception as ex:
                     st.error(f"🚨 Automation Processing Error: {str(ex)}")
         else:
