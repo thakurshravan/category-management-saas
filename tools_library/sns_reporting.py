@@ -1,243 +1,174 @@
-# tools_library/sns_reporting.py
-import streamlit as st
+import os
+import datetime
 import pandas as pd
 import numpy as np
-import io
-import datetime
-import os
+import win32com.client as win32
 
-# ==========================================================
-# 🏷️ MODULE METADATA & ENTRY REGISTRATION FOR STREAMLIT LOCAL
-# ==========================================================
-TOOL_NAME = "SNS Reporting Tool"
-TOOL_ICON = "📈"
+# ==========================================
+# 🛠️ 1. SETUP PARAMETERS & CONFIGURATION
+# ==========================================
+# Update these paths to where your actual files are saved on your laptop
+sales_file_path = "./Sales_Data.xlsx"
+stock_file_path = "./Stock_Data.xlsx"
+email_master_path = "./Email_Master - All.xlsx"
 
-def clean_headers(df):
-    """Strips hidden spaces from input spreadsheet headers securely."""
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+# Global Email Templates
+mail_subject = "Sales & Stocks Performance Report Update"
+mail_body = """Dear valued partner,
 
-def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body, start_date, end_date, execution_mode):
-    """Executes isolated sheet splits matching your exact raw Sales, Stock, and Email Master layouts."""
-    
-    # Load files safely from memory
-    df_sales = pd.read_excel(sales_file) if sales_file.name.endswith('.xlsx') else pd.read_csv(sales_file)
-    df_stock = pd.read_excel(stock_file) if stock_file.name.endswith('.xlsx') else pd.read_csv(stock_file)
-    email_master = pd.read_excel(email_master_file) if email_master_file.name.endswith('.xlsx') else pd.read_csv(email_master_file)
-    
-    df_sales = clean_headers(df_sales)
-    df_stock = clean_headers(df_stock)
-    email_master = clean_headers(email_master)
+Please find attached your Sales and Stock Performance Report covering the requested window.
 
-    # 🚨 CRITICAL FIX: Lock strictly onto 'Article Name' and 'Email'
-    if 'Article Name' in email_master.columns and 'Email' in email_master.columns:
-        email_master['Article Name'] = email_master['Article Name'].astype(str).str.strip().str.upper()
-        email_map = email_master.drop_duplicates(subset=['Article Name']).set_index('Article Name')['Email'].to_dict()
-    else:
-        # Emergency backup: if columns have minor typos, catch them automatically
-        found_article_col = [c for c in email_master.columns if 'article' in c.lower()]
-        found_email_col = [c for c in email_master.columns if 'email' in c.lower()]
+Thanks,
+Category Management Team
+Jumbo Electronics
+"""
+
+# Date range boundaries (Adjust these as needed)
+start_date = datetime.date(2026, 5, 1)
+end_date = datetime.date(2026, 5, 31)
+
+# Set to True to send emails instantly; False will just save drafts in Outlook
+send_instantly = True  
+
+# ==========================================
+# 📊 2. DATA LOADING & CLEANING
+# ==========================================
+print("🔄 Loading files...")
+df_sales = pd.read_excel(sales_file_path) if sales_file_path.endswith('.xlsx') else pd.read_csv(sales_file_path)
+df_stock = pd.read_excel(stock_file_path) if stock_file_path.endswith('.xlsx') else pd.read_csv(stock_file_path)
+email_master = pd.read_excel(email_master_path) if email_master_path.endswith('.xlsx') else pd.read_csv(email_master_path)
+
+# Strip hidden spaces from headers automatically
+df_sales.columns = [str(c).strip() for c in df_sales.columns]
+df_stock.columns = [str(c).strip() for c in df_stock.columns]
+email_master.columns = [str(c).strip() for c in email_master.columns]
+
+# Ensure the Email Master has the correct layout columns
+if 'Article Name' not in email_master.columns or 'Email' not in email_master.columns:
+    raise ValueError("Your Email Master must contain exact 'Article Name' and 'Email' columns!")
+
+# Clean up the key column for flawless matching
+email_master['Article Name'] = email_master['Article Name'].astype(str).str.strip().str.upper()
+email_master = email_master.drop_duplicates(subset=['Article Name'])
+email_map = email_master.set_index('Article Name')['Email'].to_dict()
+
+# ==========================================
+# 📅 3. DATE FILTERING (Sales Only)
+# ==========================================
+if 'Invoice Created On' in df_sales.columns:
+    df_sales['Invoice Created On'] = pd.to_datetime(df_sales['Invoice Created On'], errors='coerce')
+    df_sales = df_sales[
+        (df_sales['Invoice Created On'].dt.date >= start_date) & 
+        (df_sales[date_col].dt.date <= end_date)
+    ].copy()
+else:
+    print("⚠️ Warning: 'Invoice Created On' column not found in Sales file. Skipping date filter.")
+
+# ==========================================
+# 🎯 4. STABILIZE EXACT SCHEMA COLUMNS
+# ==========================================
+# These lists match your exact raw column descriptions
+sales_output_cols = [
+    'Site', 'Site Name', 'Sales Office', 'Article', 'Item Description', 
+    'Article Name', 'Family Name', 'Sub-Family Name', 'Category Name', 
+    'Brand Name', 'RRP Price', 'Invoice Created On', 'Invoice Quantity', 'Amount@RRP'
+]
+
+stock_output_cols = [
+    'Article', 'Article Name', 'Item Description', 'Site', 'Site Name', 
+    'Location Name', 'Family Name', 'Sub-Family Name', 'Brand Name', 
+    'Category Name', 'Physical Stock', 'Consignment Stock'
+]
+
+# Guarantee columns exist to prevent script crashes
+for col in sales_output_cols:
+    if col not in df_sales.columns: df_sales[col] = np.nan
+for col in stock_output_cols:
+    if col not in df_stock.columns: df_stock[col] = np.nan
+
+# Slice and isolate clean working datasets
+df_sales_clean = df_sales[sales_output_cols].copy()
+df_stock_clean = df_stock[stock_output_cols].copy()
+
+# Standardize match keys across dataframes
+df_sales_clean['Article Name'] = df_sales_clean['Article Name'].astype(str).str.strip().str.upper()
+df_stock_clean['Article Name'] = df_stock_clean['Article Name'].astype(str).str.strip().str.upper()
+
+# Inject recipient emails via Article Name lookup map
+df_sales_clean['Email'] = df_sales_clean['Article Name'].map(email_map)
+df_stock_clean['Email'] = df_stock_clean['Article Name'].map(email_map)
+
+# Isolate list of all target vendor emails
+all_emails = set(df_sales_clean['Email'].dropna().unique()).union(set(df_stock_clean['Email'].dropna().unique()))
+
+# Create a temporary local folder to hold outbound Excel attachments
+temp_folder = os.path.abspath("./temp_outbound_reports")
+if not os.path.exists(temp_folder):
+    os.makedirs(temp_folder)
+
+# ==========================================
+# ✉️ 5. SPLIT PROCESSOR & OUTLOOK AUTOMATION LOOP
+# ==========================================
+print(f"🚀 Found {len(all_emails)} unique partner emails to process.")
+processed_count = 0
+
+for email in all_emails:
+    email_str = str(email).strip()
+    # Skip any unmapped placeholders
+    if email_str.lower() in ['unmapped@company.com', 'na', 'nan', '', 'na;na']:
+        continue
         
-        if found_article_col and found_email_col:
-            email_master['Article Name'] = email_master[found_article_col[0]].astype(str).str.strip().str.upper()
-            email_map = email_master.drop_duplicates(subset=['Article Name']).set_index('Article Name')[found_email_col[0]].to_dict()
+    # Extract matching row records
+    sales_final = df_sales_clean[df_sales_clean['Email'] == email_str].copy()
+    stock_final = df_stock_clean[df_stock_clean['Email'] == email_str].copy()
+    
+    # Format dates nicely for final Excel presentation sheet layout
+    if not sales_final.empty and 'Invoice Created On' in sales_final.columns:
+        sales_final['Invoice Created On'] = pd.to_datetime(sales_final['Invoice Created On']).dt.date
+        
+    # Strip distribution tracking column before writing file to vendor
+    sales_final = sales_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
+    stock_final = stock_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
+    
+    if sales_final.empty and stock_final.empty:
+        continue
+        
+    # Build clean filename path string safely
+    clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
+    file_output_path = os.path.join(temp_folder, clean_filename)
+    
+    # Write the dual-tab spreadsheet out to disk path
+    with pd.ExcelWriter(file_output_path, engine='openpyxl') as writer:
+        sales_final.to_excel(writer, sheet_name='Sales Report', index=False)
+        stock_final.to_excel(writer, sheet_name='Stock Report', index=False)
+        
+    # Connect directly to your native Windows Outlook application session
+    try:
+        outlook = win32.Dispatch('outlook.application')
+        message = outlook.CreateItem(0)
+        message.Subject = mail_subject
+        message.Body = mail_body
+        message.To = email_str
+        
+        # Attach the local generated Excel document
+        message.Attachments.Add(file_output_path)
+        
+        if send_instantly:
+            message.Send()
+            print(f"✅ Sent successfully to: {email_str}")
         else:
-            raise ValueError(f"The uploaded Email Master columns do not match. Found columns: {list(email_master.columns)}. It must contain 'Article Name' and 'Email'.")
-
-    # Filter dates on Sales sheet using 'Invoice Created On'
-    date_col = 'Invoice Created On'
-    if date_col in df_sales.columns:
-        df_sales[date_col] = pd.to_datetime(df_sales[date_col], errors='coerce')
-        df_sales = df_sales[
-            (df_sales[date_col].dt.date >= start_date) & 
-            (df_sales[date_col].dt.date <= end_date)
-        ].copy()
-
-    # The exact columns you listed for both files
-    sales_specific_cols = [
-        'Site', 'Site Name', 'Sales Office', 'Article', 'Item Description', 
-        'Article Name', 'Family Name', 'Sub-Family Name', 'Category Name', 
-        'Brand Name', 'RRP Price', 'Invoice Created On', 'Invoice Quantity', 'Amount@RRP'
-    ]
-
-    stock_specific_cols = [
-        'Article', 'Article Name', 'Item Description', 'Site', 'Site Name', 
-        'Location Name', 'Family Name', 'Sub-Family Name', 'Brand Name', 
-        'Category Name', 'Physical Stock', 'Consignment Stock'
-    ]
-
-    # Ensure all columns exist to prevent key errors
-    for col in sales_specific_cols:
-        if col not in df_sales.columns: df_sales[col] = ""
-    for col in stock_specific_cols:
-        if col not in df_stock.columns: df_stock[col] = ""
-
-    # Slice clean views
-    df_sales_clean = df_sales[sales_specific_cols].copy()
-    df_stock_clean = df_stock[stock_specific_cols].copy()
-
-    # Standardize comparison keys
-    df_sales_clean['Article Name'] = df_sales_clean['Article Name'].astype(str).str.strip().str.upper()
-    df_stock_clean['Article Name'] = df_stock_clean['Article Name'].astype(str).str.strip().str.upper()
-
-    # Map target emails using the Article Name cross-reference dictionary
-    df_sales_clean['Email'] = df_sales_clean['Article Name'].map(email_map)
-    df_stock_clean['Email'] = df_stock_clean['Article Name'].map(email_map)
-
-    # Get unique recipient emails
-    all_emails = set(df_sales_clean['Email'].dropna().unique()).union(set(df_stock_clean['Email'].dropna().unique()))
-
-    processed_count = 0
-    zip_buffer_dict = {}
-    email_delivery_report = []
-
-    # Check local Windows environment for native Outlook connection
-    use_local_win = (execution_mode == "Local Desktop App (Outlook)") and (os.name == 'nt')
-    if send_email and use_local_win:
-        import win32com.client as win32
-        temp_dir = "./temp_sns_outbound/"
-        if not os.path.exists(temp_dir):
-            os.makedirs(temp_dir)
-
-    for email in all_emails:
-        email_str = str(email).strip()
-        if email_str.lower() in ['unmapped@company.com', 'na', 'nan', '', 'na;na']:
-            continue
-
-        sales_final = df_sales_clean[df_sales_clean['Email'] == email_str].copy()
-        stock_final = df_stock_clean[df_stock_clean['Email'] == email_str].copy()
-
-        if not sales_final.empty and 'Invoice Created On' in sales_final.columns:
-            sales_final['Invoice Created On'] = pd.to_datetime(sales_final['Invoice Created On']).dt.date
-
-        sales_final = sales_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
-        stock_final = stock_final.drop(columns=['Email'], errors='ignore').dropna(how='all')
-
-        if sales_final.empty and stock_final.empty:
-            continue
-
-        clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
-        
-        excel_out = io.BytesIO()
-        with pd.ExcelWriter(excel_out, engine='openpyxl') as writer:
-            sales_final.to_excel(writer, sheet_name='Sales Report', index=False)
-            stock_final.to_excel(writer, sheet_name='Stock Report', index=False)
+            message.Save()
+            print(f"💾 Saved as draft for: {email_str}")
             
-        excel_bytes = excel_out.getvalue()
-        zip_buffer_dict[clean_filename] = excel_bytes
         processed_count += 1
+    except Exception as mail_error:
+        print(f"❌ Failed to dispatch email to {email_str}. Error: {str(mail_error)}")
 
-        # ─── ✉️ LOCAL OUTLOOK DISPATCH ENGINE ───
-        if send_email and use_local_win:
-            try:
-                local_file_path = os.path.abspath(os.path.join(temp_dir, clean_filename))
-                with open(local_file_path, "wb") as f:
-                    f.write(excel_bytes)
-                
-                outlook = win32.Dispatch('outlook.application')
-                message = outlook.CreateItem(0)
-                message.Subject = mail_subject
-                message.Body = mail_body
-                message.To = email_str
-                message.Attachments.Add(local_file_path)
-                message.Send()
-                
-                email_delivery_report.append({"Partner Email": email_str, "Status": "Sent via Desktop Outlook Application"})
-            except Exception as local_err:
-                email_delivery_report.append({"Partner Email": email_str, "Status": f"Desktop Integration Error: {str(local_err)}"})
+# Cleanup generated folder assets on disk when loop finishes
+for f in os.listdir(temp_folder):
+    try: os.remove(os.path.join(temp_folder, f))
+    except: pass
+try: os.rmdir(temp_folder)
+except: pass
 
-    if send_email and use_local_win and os.path.exists(temp_dir):
-        for f in os.listdir(temp_dir):
-            try: os.remove(os.path.join(temp_dir, f))
-            except: pass
-
-    return processed_count, zip_buffer_dict, email_delivery_report
-
-def render_ui():
-    st.title(f"{TOOL_ICON} {TOOL_NAME}")
-    st.subheader("Process transactional allocations and handle partner distribution loops.")
-    st.markdown("---")
-    
-    with st.sidebar:
-        st.header("🔑 Operational Environment Settings")
-        run_mode = st.radio(
-            "Select Execution Mode Routing:",
-            ["Local Desktop App (Outlook)", "Cloud Server Gateway (SMTP)"],
-            index=0
-        )
-        st.success("💻 Running in Local Desktop Mode. Sending via your active Outlook window—no passwords required!")
-
-    col_u1, col_u2 = st.columns(2)
-    with col_u1:
-        sales_file = st.file_uploader("Upload Raw Sales Transactions Sheet", type=["xlsx", "csv"], key="sns_sales")
-        stock_file = st.file_uploader("Upload Active Stock Balancing Sheet", type=["xlsx", "csv"], key="sns_stock")
-    with col_u2:
-        email_master_file = st.file_uploader("Upload Brand Email Master Mapping Sheet", type=["xlsx", "csv"], key="sns_email")
-        
-    st.markdown("### 📅 Filter Constraints (Invoice Created On)")
-    date_col1, date_col2 = st.columns(2)
-    with date_col1:
-        start_date = st.date_input("Reporting From Date:", value=datetime.date(2026, 5, 1), key="sns_start")
-    with date_col2:
-        end_date = st.date_input("Reporting To Date:", value=datetime.date(2026, 5, 31), key="sns_end")
-
-    st.markdown("### ✉️ Email Broadcast Template Configuration")
-    send_email = st.checkbox("Enable Automated Email Distribution Loop?", value=False, key="sns_send")
-
-    if send_email:
-        default_body_str = (
-            "Dear valued partner,\n\n"
-            "Please find attached your Sales and Stock Performance Report covering the requested window.\n\n"
-            "Thanks,\n"
-            "Category Management Team\n"
-            "Jumbo Electronics"
-        )
-        mail_subject = st.text_input("Email Global Subject Line:", value="Sales & Stocks Report Update", key="sns_subject_input")
-        mail_body = st.text_area("Email Global Body Text Content:", value=default_body_str, height=180, key="sns_body_input")
-    else:
-        mail_subject = ""
-        mail_body = ""
-
-    st.markdown("---")
-
-    if st.button("⚡ Execute Reporting Automation Loops", type="primary", use_container_width=True, key="sns_run"):
-        if sales_file and stock_file and email_master_file:
-            with st.spinner("Processing calculations and preparing distribution sheets..."):
-                try:
-                    count, generated_files, email_report = run_sns_process(
-                        sales_file, stock_file, email_master_file, 
-                        send_email, mail_subject, mail_body, start_date, end_date,
-                        execution_mode=run_mode
-                    )
-                    
-                    if count > 0:
-                        st.success(f"🎉 Process Complete! Successfully generated clean data splits for {count} unique suppliers.")
-                        
-                        if send_email and email_report:
-                            st.markdown("### 📬 Live Distribution Tracking Grid")
-                            rep_df = pd.DataFrame(email_report)
-                            st.dataframe(rep_df, use_container_width=True, hide_index=True)
-                        
-                        if generated_files:
-                            import zipfile
-                            zip_out = io.BytesIO()
-                            with zipfile.ZipFile(zip_out, 'w') as zip_f:
-                                for fname, fbytes in generated_files.items():
-                                    zip_f.writestr(fname, fbytes)
-                            
-                            st.download_button(
-                                label="📥 Download All Generated Partner Workbooks (ZIP Archive)",
-                                data=zip_out.getvalue(),
-                                file_name=f"SNS_Partner_Reports_{datetime.datetime.now().strftime('%Y%m%d')}.zip",
-                                mime="application/zip",
-                                use_container_width=True
-                            )
-                    else:
-                        st.warning("⚠️ No matching rows found. Ensure that your From and To dates cover the values inside your Sales spreadsheet data rows.")
-                except Exception as ex:
-                    st.error(f"🚨 Automation Processing Error: {str(ex)}")
-        else:
-            st.warning("Please upload Sales, Stock, and Email Master files simultaneously to generate workbooks.")
-
-if __name__ == "__main__":
-    render_ui()
+print(f"\n🎉 All tasks complete! Processed and sent {processed_count} vendor reports.")
