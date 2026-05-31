@@ -8,69 +8,74 @@ TOOL_ICON = "🎯"
 
 def render_ui():
     st.title("Brand Promotion Claims Calculator")
-    st.subheader("Strict Date Window Matching ('From' & 'To') with Master Email Lookup via 'Article Name'")
+    st.subheader("Strict Date Window Matching ('From' & 'To') with Automatic Claims Aggregation")
     
-    # 3-Column layout for clean file uploading interface
-    col1, col2, col3 = st.columns(3)
+    # 2-Column layout for clean file uploading interface
+    col1, col2 = st.columns(2)
     with col1:
         claim_sales_file = st.file_uploader("1. Upload Master Sales File", type=["xlsx", "csv"], key="claim_sales")
     with col2:
         claim_promo_file = st.file_uploader("2. Upload 01 File for ACC WTC Brand", type=["xlsx", "csv"], key="claim_promo")
-    with col3:
-        claim_email_master = st.file_uploader("3. Upload Email Master All File", type=["xlsx", "csv"], key="claim_email_master")
         
     st.markdown("---")
     
     if st.button("🚀 Calculate Total Qty Sales & Generate Claims", type="primary", key="claim_run"):
-        if claim_sales_file and claim_promo_file and claim_email_master:
-            with st.spinner("Processing files, applying inclusive date validation, and compiling the full report..."):
+        if claim_sales_file and claim_promo_file:
+            with st.spinner("Processing files, applying inclusive date validation, and compiling the report..."):
                 try:
                     # 1. Dynamically read all file streams safely (.csv or .xlsx)
                     df_sales = pd.read_csv(claim_sales_file) if claim_sales_file.name.endswith('.csv') else pd.read_excel(claim_sales_file)
                     df_promo = pd.read_csv(claim_promo_file) if claim_promo_file.name.endswith('.csv') else pd.read_excel(claim_promo_file)
-                    df_emails = pd.read_csv(claim_email_master) if claim_email_master.name.endswith('.csv') else pd.read_excel(claim_email_master)
                     
                     # 2. Harmonize column name headers to ensure 'Article Name' is strictly uniform
                     if "Code" in df_promo.columns and "Article Name" not in df_promo.columns:
                         df_promo = df_promo.rename(columns={"Code": "Article Name"})
                     
-                    # Drop any pre-existing email references from the promo file to guarantee we ONLY use Email_Master - All
-                    if "Email id" in df_promo.columns:
-                        df_promo = df_promo.drop(columns=["Email id"])
-                    if "Email" in df_promo.columns:
-                        df_promo = df_promo.drop(columns=["Email"])
-                        
-                    # 3. Convert date strings to strict datetime objects for window filtering
-                    df_sales["Invoice Created On"] = pd.to_datetime(df_sales["Invoice Created On"], errors="coerce")
-                    df_promo["From"] = pd.to_datetime(df_promo["From"], errors="coerce")
-                    df_promo["To"] = pd.to_datetime(df_promo["To"], errors="coerce")
+                    # 3. Safe Date Parsing & Normalization (Strips hidden times)
+                    df_sales["Invoice Created On"] = pd.to_datetime(df_sales["Invoice Created On"], errors="coerce").dt.normalize()
+                    df_promo["From"] = pd.to_datetime(df_promo["From"], errors="coerce").dt.normalize()
+                    df_promo["To"] = pd.to_datetime(df_promo["To"], errors="coerce").dt.normalize()
                     
                     # 4. Clean and normalize string matching keys (strip whitespace, force uppercase)
                     df_sales["Article Name"] = df_sales["Article Name"].astype(str).str.strip().str.upper()
                     df_promo["Article Name"] = df_promo["Article Name"].astype(str).str.strip().str.upper()
-                    df_emails["Article Name"] = df_emails["Article Name"].astype(str).str.strip().str.upper()
                     
                     # 5. Handle numbers safely to prevent broken aggregation calculations
                     df_sales["Invoice Quantity"] = pd.to_numeric(df_sales["Invoice Quantity"], errors="coerce").fillna(0)
                     df_promo["GV"] = pd.to_numeric(df_promo["GV"], errors="coerce").fillna(0)
                     
-                    # 6. Step 1 Join: Link Sales directly to the Promotion parameters using the common 'Article Name'
-                    merged = pd.merge(df_sales, df_promo, on="Article Name", how="inner")
+                    # --- LIVE DIAGNOSTIC DATA CHECK ---
+                    st.info("🔍 **Live Diagnostic Data Check:**")
+                    st.write(f"- Initial Sales Rows Uploaded: `{len(df_sales)}`")
+                    st.write(f"- Initial Promo Rows Uploaded: `{len(df_promo)}`")
                     
-                    # CRITICAL FIX: Resolve duplicate 'Brand' columns resulting from the merge step (Brand_x vs Brand_y)
+                    # 6. Step 1 Join: Link Sales directly to the Promotion parameters using common 'Article Name'
+                    merged = pd.merge(df_sales, df_promo, on="Article Name", how="inner")
+                    st.write(f"- Rows remaining *after* matching 'Article Name': `{len(merged)}`")
+                    
+                    if len(merged) == 0:
+                        st.error("❌ Mismatch Warning: 'Article Name' match returned 0 rows. Check a sample below:")
+                        st.write("Sales File Samples:", df_sales["Article Name"].head(3).tolist())
+                        st.write("Promo File Samples:", df_promo["Article Name"].head(3).tolist())
+                        return
+                    
+                    # Resolve duplicate 'Brand' columns resulting from the merge step (Brand_x vs Brand_y)
                     if "Brand_y" in merged.columns:
                         merged = merged.rename(columns={"Brand_y": "Brand"})
                     elif "Brand_x" in merged.columns:
                         merged = merged.rename(columns={"Brand_x": "Brand"})
                     
-                    # 7. Inclusive day-to-day validation (includes exact same starting/ending dates)
+                    # 7. Inclusive day-to-day validation (Direct Datetime Comparison)
                     valid_claims = merged[
-                        (merged["Invoice Created On"].dt.date >= merged["From"].dt.date) & 
-                        (merged["Invoice Created On"].dt.date <= merged["To"].dt.date)
+                        (merged["Invoice Created On"] >= merged["From"]) & 
+                        (merged["Invoice Created On"] <= merged["To"])
                     ]
+                    st.write(f"- Rows remaining *after* Date Window Filtering: `{len(valid_claims)}`")
                     
                     if valid_claims.empty:
-                        st.warning("⚠️ No records found where the Sales dates fell inside the promotion 'From' and 'To' date windows.")
+                        st.warning("⚠️ Date Window Mismatch: Article Names matched perfectly, but none of your Sales Invoice dates fall between their promotion 'From' and 'To' windows.")
+                        st.write("Sample merged row showing dates that didn't align:")
+                        st.dataframe(merged[["Article Name", "Invoice Created On", "From", "To"]].head(3))
                         return
                     
                     # 8. Comprehensive grouping structure to ensure Comments, Brand, and Promo Codes stay intact
@@ -90,18 +95,10 @@ def render_ui():
                     # 9. Compute claims total amounts
                     final_summary["Total Claim Amount"] = final_summary["Total_Qty_Sold"] * final_summary["GV"]
                     
-                    # 10. Step 2 Join: Strictly pull contact emails from Email_Master - All using common 'Article Name'
-                    df_emails_clean = df_emails[["Article Name", "Email"]].drop_duplicates(subset=["Article Name"])
-                    final_summary = pd.merge(final_summary, df_emails_clean, on="Article Name", how="left")
-                    
-                    # Rename the master email column to 'Email id' to match your exact sheet layout format
-                    if "Email" in final_summary.columns:
-                        final_summary = final_summary.rename(columns={"Email": "Email id"})
-                        final_summary["Email id"] = final_summary["Email id"].fillna("missing@contact.com")
-                    else:
-                        final_summary["Email id"] = "missing@contact.com"
-                    
-                    # Clean visual positioning: insert 'Email id' column right after Brand column
+                    # 10. Clean up Column Layout: Insert a default placeholder Email ID column right after Brand if needed
+                    if "Email id" not in final_summary.columns:
+                        final_summary["Email id"] = "partner@brandcontact.com"
+                        
                     if "Email id" in final_summary.columns:
                         email_col = final_summary.pop("Email id")
                         if "Brand" in final_summary.columns:
@@ -128,10 +125,7 @@ def render_ui():
                     st.markdown("### 📧 Generated Email Body Template")
                     
                     target_recipient = "partner@brandcontact.com"
-                    if "Email id" in final_summary.columns and not final_summary["Email id"].dropna().empty:
-                        target_recipient = final_summary["Email id"].dropna().iloc[0]
-                        
-                    st.markdown(f"**Target Destination To (Pulled strictly from Email Master):** `{target_recipient}`")
+                    st.markdown(f"**Target Destination To:** `{target_recipient}`")
                     
                     email_msg = (
                         "Dear Value Partner,\n\n"
@@ -146,4 +140,4 @@ def render_ui():
                 except Exception as ex:
                     st.error(f"An unexpected data processing error occurred: {ex}")
         else:
-            st.warning("Please verify that all three required files are uploaded completely.")
+            st.warning("Please verify that both required files are uploaded completely.")
