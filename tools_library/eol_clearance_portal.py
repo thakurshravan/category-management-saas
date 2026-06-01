@@ -10,11 +10,11 @@ from datetime import datetime, timedelta
 TOOL_NAME = "EOL Clearance Ingest Portal"
 TOOL_ICON = "📉"
 
-# Exactly matching your uploaded template schema
+# EXACT MATCHES FIXED FOR YOUR EXCEL SHEET
 REQUIRED_COLUMNS = [
-    "S.No", "Supplier Code", "Supplier Name", "SAP Code", "Description",
+    "S. No.", "Supplier Code", "Supplier Name", "SAP Code", "Description",
     "Category L1", "Category L3", "Brand", "Model", "Stock", "Cost",
-    "Total Cost", "RRP", "Total RRP", "Clearance Price", "Total Clearance Value",
+    "Total Cost", "RRP", "Total RRP", "Clearance Price", "Total Clearance price",
     "Action Plan", "Target Value"
 ]
 
@@ -37,7 +37,6 @@ def render_ui():
     st.markdown("Consolidate End-of-Life (EOL) Clearance reports with absolute format structural enforcement.")
     st.markdown("---")
 
-    # Access current routing parameters
     url_params = st.query_params
 
     if "view" in url_params and url_params["view"] == "portal":
@@ -53,13 +52,9 @@ def render_admin_management_dashboard():
 
     with tab_links:
         st.subheader("Generate EOL Submission Connections")
-        st.markdown("Produce tracking parameters to securely distribute to your field teams or vendors.")
-        
-        # Vendor array distribution intake
         raw_vendors = st.text_area(
             "Input Target Supplier / Team Identifiers (Comma Separated):",
-            placeholder="e.g., Apple EOL, Samsung Audio, Sony Video",
-            help="Separate each group tracking name with a comma."
+            placeholder="e.g., Apple EOL, Samsung Audio, Sony Video"
         )
 
         st.markdown("### ⏳ Validity Parameter Window")
@@ -68,7 +63,6 @@ def render_admin_management_dashboard():
             ["7 Days Window", "14 Days Window", "30 Days Window", "Permanent Connection"]
         )
 
-        # Handle chronological drift settings
         now = datetime.now()
         if "7 Days" in validity_choice:
             expiry_str = (now + timedelta(days=7)).strftime("%Y-%m-%d")
@@ -84,7 +78,6 @@ def render_admin_management_dashboard():
                 vendor_nodes = [v.strip() for v in raw_vendors.split(",") if v.strip()]
                 st.success(f"Successfully configured {len(vendor_nodes)} EOL reporting portals!")
                 
-                # Base dynamic web context routing link
                 app_base = "https://category-management-saas-fwpgyjvewktqf4repbby8j.streamlit.app"
                 
                 link_manifest = []
@@ -99,8 +92,6 @@ def render_admin_management_dashboard():
                     })
                 
                 st.dataframe(pd.DataFrame(link_manifest), use_container_width=True, hide_index=True)
-            else:
-                st.warning("Please input at least one target scope identifier name.")
 
     with tab_overview:
         st.subheader("Staging Pipeline Overview")
@@ -111,9 +102,7 @@ def render_admin_management_dashboard():
         else:
             st.success(f"Detected {len(pending_files)} upstream EOL trackers submitted.")
             
-            # Master Deletion Control Node
             with st.expander("🚨 Flush Database Storage Buffer", expanded=False):
-                st.write("Permanently clears all active staging files to reset the collection cycle.")
                 lock_check = st.checkbox("Confirm permanent delete action sequence")
                 if st.button("Execute Storage Wipe", type="primary", use_container_width=True):
                     if lock_check:
@@ -124,7 +113,6 @@ def render_admin_management_dashboard():
             
             st.markdown("---")
 
-            # Combine all incoming streams safely
             consolidated_runs = []
             for document in pending_files:
                 doc_path = os.path.join(STORAGE_DIR, document)
@@ -136,8 +124,6 @@ def render_admin_management_dashboard():
 
             if consolidated_runs:
                 master_eol_df = pd.concat(consolidated_runs, ignore_index=True)
-                
-                # Download Stream Provisioning
                 csv_bytes = master_eol_df.to_csv(index=False).encode('utf-8')
                 st.download_button(
                     label="📥 Download Master Consolidated EOL Clearance Data (.csv)",
@@ -156,7 +142,6 @@ def render_public_uploader_portal(url_params):
     scope_target = url_params.get("vendor", "Target Scope").upper().replace("-", " ")
     expiry_deadline = url_params.get("exp", "never")
 
-    # Structural Time Gate Evaluation
     gate_expired = False
     if expiry_deadline != "never":
         try:
@@ -168,60 +153,52 @@ def render_public_uploader_portal(url_params):
 
     if gate_expired:
         st.error("🔒 **Submission Link Terminated**")
-        st.subheader("The availability period allocated for this data drop collection loop has expired.")
         st.stop()
 
     st.title("📉 Secure EOL Clearance Tracker Portal")
     st.subheader(f"Portfolio Assignment: {scope_target}")
-    if expiry_deadline != "never":
-        st.caption(f"⏳ Submission timeline closing window date: **{expiry_deadline}**")
     st.markdown("---")
-
-    # Instructions box mapping schema expectations directly
-    st.info(
-        "💡 **Data Standard Requirement:** Your column headers must accurately align to the following naming strings:\n\n"
-        "`S.No` | `Supplier Code` | `Supplier Name` | `SAP Code` | `Description` | `Category L1` | "
-        "`Category L3` | `Brand` | `Model` | `Stock` | `Cost` | `Total Cost` | `RRP` | `Total RRP` | "
-        "`Clearance Price` | `Total Clearance Value` | `Action Plan` | `Target Value`"
-    )
 
     uploaded_tracker = st.file_uploader("Drop your EOL Tracker Excel or CSV file here:", type=["xlsx", "csv"])
 
     if uploaded_tracker:
         try:
             # Read format safely
-            raw_data_df = pd.read_excel(uploaded_tracker) if uploaded_tracker.name.endswith('.xlsx') else pd.read_csv(uploaded_tracker)
+            df = pd.read_excel(uploaded_tracker) if uploaded_tracker.name.endswith('.xlsx') else pd.read_csv(uploaded_tracker)
             
-            # Normalize user-supplied string header spaces
-            cleansed_headers = [str(col).strip() for col in raw_data_df.columns]
-            raw_data_df.columns = cleansed_headers
+            # Clean up unnamed blank columns generated by Excel formatting artifacts
+            df = df.loc[:, ~df.columns.astype(str).str.contains('^Unnamed')]
+
+            # Formats cleaning: Remove multi-line returns and nested double spaces
+            df.columns = [str(col).replace('\n', ' ').strip() for col in df.columns]
+            df.columns = [" ".join(str(col).split()) for col in df.columns]
 
             # Cross check missing columns
-            absent_columns = [expected for expected in REQUIRED_COLUMNS if expected not in cleansed_headers]
+            absent_columns = [expected for expected in REQUIRED_COLUMNS if expected not in df.columns]
 
             if absent_columns:
                 st.error("❌ **Upload Aborted: Alignment Structure Invalidation**")
-                st.write("The incoming tracker could not be committed because the following headers are missing:")
+                st.write("Your spreadsheet headers don't line up perfectly. Missing columns:")
                 st.code(f"{absent_columns}", language="json")
             else:
                 # Isolate target structure frame
-                processed_df = raw_data_df[REQUIRED_COLUMNS].copy()
+                processed_df = df[REQUIRED_COLUMNS].copy()
 
                 # Clean numeric and financial parameters safely to minimize math breakdowns
-                monetary_fields = ["Stock", "Cost", "Total Cost", "RRP", "Total RRP", "Clearance Price", "Total Clearance Value", "Target Value"]
+                monetary_fields = ["Stock", "Cost", "Total Cost", "RRP", "Total RRP", "Clearance Price", "Total Clearance price", "Target Value"]
                 for field in monetary_fields:
                     processed_df[field] = processed_df[field].apply(sanitize_numeric_value)
 
-                # Add orchestration metadata attributes
+                # Add metadata
                 processed_df["Ingest Source Channel"] = scope_target
                 processed_df["Data Submission Date"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-                # Serialize down safely to storage matrix target path
+                # Save file sequence logic
                 save_filename = f"eol_drop_{url_params.get('vendor', 'unnamed')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
                 processed_df.to_csv(os.path.join(STORAGE_DIR, save_filename), index=False)
 
                 st.balloons()
-                st.success(f"🎉 Thank you! The EOL Clearance ledger for '{scope_target}' has been processed and synced successfully.")
+                st.success(f"🎉 Thank you! The EOL Clearance ledger for '{scope_target}' has been verified and synced.")
                 
         except Exception as err:
-            st.error(f"A physical validation failure stopped interpretation: {err}")
+            st.error(f"A validation failure stopped interpretation: {err}")
