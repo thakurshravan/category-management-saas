@@ -18,7 +18,7 @@ TOOL_ICON = "📈"
 EXPIRATION_DATE = datetime.date(2026, 7, 1)
 
 def send_local_smtp_email(to_email, subject, body, attachment_bytes, attachment_filename, smtp_server, smtp_port, sender_email, sender_password):
-    """Sends emails directly using secure background SMTP server configurations input by the user."""
+    """Sends emails directly via secure background local SMTP server routing."""
     try:
         # Build multipart message payload envelope
         msg = MIMEMultipart()
@@ -34,7 +34,7 @@ def send_local_smtp_email(to_email, subject, body, attachment_bytes, attachment_
         part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
         msg.attach(part)
 
-        # Establish direct secure web connection loop
+        # Establish direct secure connection to mail relay
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()  # Secure connection via TLS
         server.login(sender_email, sender_password)
@@ -104,7 +104,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
 
         clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
         
-        # Build entirely in-memory to keep things lightning fast
+        # Build entirely in-memory to keep things lightning fast on your PC
         out_buffer = io.BytesIO()
         with pd.ExcelWriter(out_buffer, engine='openpyxl') as writer:
             sales_final.to_excel(writer, sheet_name='Sales Report', index=False)
@@ -136,9 +136,10 @@ def render_ui():
         return
 
     st.title(f"{TOOL_ICON} {TOOL_NAME}")
-    st.caption(f"🔒 Corporate License Node Status: Active (Expires: {EXPIRATION_DATE.strftime('%d-%b-%Y')})")
+    st.caption(f"🔒 Local Host Node Status: Active (Expires: {EXPIRATION_DATE.strftime('%d-%b-%Y')})")
     st.markdown("---")
 
+    # Layout Files Card Panels
     col1, col2, col3 = st.columns(3)
     with col1:
         sales_f = st.file_uploader("📂 Drop Raw Sales Spreadsheet (Sales.xlsx)", type=["xlsx"])
@@ -154,9 +155,9 @@ def render_ui():
     with d_col2:
         end_d = st.date_input("Reporting To Window End Date:", value=datetime.date(2026, 5, 31))
 
-    # --- 🔐 NEW: LOCAL HOST SMTP CHANNEL INTERFACE ---
-    st.markdown("### ⚙️ Local SMTP Server Credentials")
-    with st.expander("📬 Configure Mail Server Connection", expanded=True):
+    # --- 🔐 SEPARATED HEADER: LOCAL HOST SMTP CHANNEL INTERFACE ---
+    st.markdown("### 🖥️ Local Host SMTP Configuration")
+    with st.expander("📬 Configure Local Mail Server Connection", expanded=True):
         sc1, sc2 = st.columns(2)
         with sc1:
             smtp_server = st.text_input("SMTP Server Host:", value="smtp.office365.com", help="Office 365: smtp.office365.com | Gmail: smtp.gmail.com")
@@ -176,10 +177,10 @@ def render_ui():
     if st.button("⚡ Execute Reporting Allocation Loops", type="primary"):
         if sales_f and stock_f and master_f:
             if send_mail_toggle and (not sender_email or not sender_password):
-                st.error("Please supply both your email address and password inside the configurations panel above.")
+                st.error("Please fill in both your email address and app password inside the local host SMTP panel above.")
                 return
 
-            with st.spinner("Partitioning worksheets and processing background SMTP transmission streams..."):
+            with st.spinner("Processing data splits and executing local background mail transmission streams..."):
                 try:
                     smtp_settings = {
                         "smtp_server": smtp_server,
@@ -209,4 +210,4 @@ def render_ui():
                 except Exception as err:
                     st.error(f"🚨 Core Execution Failure Block: {str(err)}")
         else:
-            st.warning("Please upload all three workbook project files into the uploader slots simultaneously to start parsing.")
+            st.warning("Please upload all three workbook files into the slots to start parsing.")
