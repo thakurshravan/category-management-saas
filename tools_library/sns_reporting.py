@@ -1,64 +1,60 @@
-# tools_library/sns_reporting.py
-import streamlit as st
+# --- RUN THIS CELL IN YOUR JUPYTER NOTEBOOK ---
+import ipywidgets as widgets
+from IPython.display import display, HTML
 import pandas as pd
 import numpy as np
 import io
 import datetime
-import os
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
-TOOL_NAME = "Supplier Performance Engine"
-TOOL_ICON = "📈"
+# ==========================================================
+# 🔐 HARDCODED LOCAL DEFAULTS (Change these once, never re-type)
+# ==========================================================
+DEFAULT_SMTP_SERVER = "smtp.office365.com"   # Office365/Outlook default
+DEFAULT_SMTP_PORT = 587
+DEFAULT_SENDER_EMAIL = "your-email@company.com" 
+DEFAULT_SENDER_PASSWORD = "your-app-password" # Leave blank if you prefer typing it in real-time
 
-# 🔒 HARDCODED LICENSE DEADLINE
-EXPIRATION_DATE = datetime.date(2026, 7, 1)
-
-def send_local_smtp_email(to_email, subject, body, attachment_bytes, attachment_filename, smtp_server, smtp_port, sender_email, sender_password):
-    """Sends emails directly via secure background local SMTP server routing."""
+def send_local_email(to_email, subject, body, attachment_bytes, attachment_filename):
+    """Quietly dispatches emails via local network sockets without opening Outlook windows"""
     try:
-        # Build multipart message payload envelope
         msg = MIMEMultipart()
-        msg['From'] = sender_email
+        msg['From'] = DEFAULT_SENDER_EMAIL
         msg['To'] = to_email
         msg['Subject'] = subject
         msg.attach(MIMEText(body, 'plain'))
 
-        # Pack the binary Excel sheet attachment stream
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(attachment_bytes)
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f'attachment; filename="{attachment_filename}"')
         msg.attach(part)
 
-        # Establish direct secure connection to mail relay
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()  # Secure connection via TLS
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, to_email, msg.as_string())
+        server = smtplib.SMTP(DEFAULT_SMTP_SERVER, DEFAULT_SMTP_PORT)
+        server.starttls()
+        server.login(DEFAULT_SENDER_EMAIL, DEFAULT_SENDER_PASSWORD)
+        server.sendmail(DEFAULT_SENDER_EMAIL, to_email, msg.as_string())
         server.quit()
-        
-        return "🚀 Dispatched via Local SMTP Relay"
+        return "🚀 Dispatched via Local SMTP"
     except Exception as e:
-        return f"❌ Transmission Error: {str(e)}"
+        return f"❌ Error: {str(e)}"
 
-def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_subject, mail_body, start_date, end_date, smtp_settings):
-    df_sales = pd.read_excel(sales_file) if sales_file.name.endswith('.xlsx') else pd.read_csv(sales_file)
-    df_stock = pd.read_excel(stock_file) if stock_file.name.endswith('.xlsx') else pd.read_csv(stock_file)
-    email_master = pd.read_excel(email_master_file) if email_master_file.name.endswith('.xlsx') else pd.read_csv(email_master_file)
+def process_and_split(sales_data, stock_data, master_data, start_date, end_date):
+    """Processes datasets completely in-memory"""
+    df_sales = pd.read_excel(io.BytesIO(sales_data))
+    df_stock = pd.read_excel(io.BytesIO(stock_data))
+    email_master = pd.read_excel(io.BytesIO(master_data))
 
     df_sales.columns = [str(c).strip() for c in df_sales.columns]
     df_stock.columns = [str(c).strip() for c in df_stock.columns]
     email_master.columns = [str(c).strip() for c in email_master.columns]
 
-    if 'Article Name' in email_master.columns and 'Email' in email_master.columns:
-        email_master['Article Name'] = email_master['Article Name'].astype(str).str.strip().str.upper()
-        email_map = email_master.drop_duplicates(subset=['Article Name']).set_index('Article Name')['Email'].to_dict()
-    else:
-        raise ValueError("Email Master must contain exact 'Article Name' and 'Email' headers.")
+    email_master['Article Name'] = email_master['Article Name'].astype(str).str.strip().str.upper()
+    email_map = email_master.drop_duplicates(subset=['Article Name']).set_index('Article Name')['Email'].to_dict()
 
     if 'Invoice Created On' in df_sales.columns:
         df_sales['Invoice Created On'] = pd.to_datetime(df_sales['Invoice Created On'], errors='coerce')
@@ -83,10 +79,7 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
 
     all_emails = set(df_sales_clean['Email'].dropna().unique()).union(set(df_stock_clean['Email'].dropna().unique()))
     
-    processed_count = 0
-    zip_buffer_dict = {}
-    delivery_log = []
-
+    logs = []
     for email in all_emails:
         email_str = str(email).strip()
         if email_str.lower() in ['unmapped@company.com', 'na', 'nan', '', 'na;na']: continue
@@ -102,112 +95,59 @@ def run_sns_process(sales_file, stock_file, email_master_file, send_email, mail_
 
         if sales_final.empty and stock_final.empty: continue
 
-        clean_filename = f"SNS_Report_{email_str}.xlsx".replace("'", "").replace("(", "").replace(")", "")
+        clean_filename = f"SNS_Report_{email_str}.xlsx"
         
-        # Build entirely in-memory to keep things lightning fast on your PC
         out_buffer = io.BytesIO()
         with pd.ExcelWriter(out_buffer, engine='openpyxl') as writer:
             sales_final.to_excel(writer, sheet_name='Sales Report', index=False)
             stock_final.to_excel(writer, sheet_name='Stock Report', index=False)
         
-        file_bytes = out_buffer.getvalue()
-        zip_buffer_dict[clean_filename] = file_bytes
-        processed_count += 1
+        status = send_local_email(email_str, "Sales & Stock Report Update", "Dear Partner,\n\nPlease find attached your report.", out_buffer.getvalue(), clean_filename)
+        logs.append({"Partner Email": email_str, "Status": status})
+        
+    return pd.DataFrame(logs)
 
-        if send_email:
-            status_message = send_local_smtp_email(
-                to_email=email_str,
-                subject=mail_subject,
-                body=mail_body,
-                attachment_bytes=file_bytes,
-                attachment_filename=clean_filename,
-                **smtp_settings
+# ==========================================================
+# 🎨 INTERACTIVE JUPYTER UI LAYOUT WIDGETS
+# ==========================================================
+upload_sales = widgets.FileUpload(description="1. Sales File", accept=".xlsx", multiple=False)
+upload_stock = widgets.FileUpload(description="2. Stock File", accept=".xlsx", multiple=False)
+upload_master = widgets.FileUpload(description="3. Email Master", accept=".xlsx", multiple=False)
+
+start_date_picker = widgets.DatePicker(description='From:', value=datetime.date(2026, 5, 1))
+end_date_picker = widgets.DatePicker(description='To:', value=datetime.date(2026, 5, 31))
+btn_run = widgets.Button(description="⚡ Run Processing Loop", button_style='primary')
+output_area = widgets.Output()
+
+def on_button_click(b):
+    with output_area:
+        output_area.clear_output()
+        if not upload_sales.value or not upload_stock.value or not upload_master.value:
+            print("❌ Please upload all three files directly via the buttons above first.")
+            return
+        
+        print("⏳ Processing in-memory data splits... Please wait.")
+        
+        # Pull raw binary data out of the widgets
+        sales_bytes = list(upload_sales.value.values())[0]['content']
+        stock_bytes = list(upload_stock.value.values())[0]['content']
+        master_bytes = list(upload_master.value.values())[0]['content']
+        
+        try:
+            log_df = process_and_split(
+                sales_bytes, stock_bytes, master_bytes, 
+                start_date_picker.value, end_date_picker.value
             )
-            delivery_log.append({"Partner Email": email_str, "Status": status_message})
-        else:
-            delivery_log.append({"Partner Email": email_str, "Status": "💾 Workbook Generated (ZIP package)"})
+            print("🎉 Done! Review your output distribution logs below:")
+            display(log_df)
+        except Exception as err:
+            print(f"🚨 Process Broken: {str(err)}")
 
-    return processed_count, zip_buffer_dict, delivery_log
+btn_run.on_click(on_button_click)
 
-def render_ui():
-    current_today = datetime.date.today()
-    if current_today > EXPIRATION_DATE:
-        st.error(f"🚨 LICENSE EXPIRED: This software expired on {EXPIRATION_DATE.strftime('%d-%b-%Y')}. Please contact administration for a token refresh key.")
-        return
-
-    st.title(f"{TOOL_ICON} {TOOL_NAME}")
-    st.caption(f"🔒 Local Host Node Status: Active (Expires: {EXPIRATION_DATE.strftime('%d-%b-%Y')})")
-    st.markdown("---")
-
-    # Layout Files Card Panels
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        sales_f = st.file_uploader("📂 Drop Raw Sales Spreadsheet (Sales.xlsx)", type=["xlsx"])
-    with col2:
-        stock_f = st.file_uploader("📂 Drop Active Stock Balancing Sheet (stock.xlsx)", type=["xlsx"])
-    with col3:
-        master_f = st.file_uploader("📂 Drop Brand Email Mapping Master File", type=["xlsx"])
-
-    st.markdown("### 📅 Execution Constraints Configuration")
-    d_col1, d_col2 = st.columns(2)
-    with d_col1:
-        start_d = st.date_input("Reporting From Window Start Date:", value=datetime.date(2026, 5, 1))
-    with d_col2:
-        end_d = st.date_input("Reporting To Window End Date:", value=datetime.date(2026, 5, 31))
-
-    # --- 🔐 SEPARATED HEADER: LOCAL HOST SMTP CHANNEL INTERFACE ---
-    st.markdown("### 🖥️ Local Host SMTP Configuration")
-    with st.expander("📬 Configure Local Mail Server Connection", expanded=True):
-        sc1, sc2 = st.columns(2)
-        with sc1:
-            smtp_server = st.text_input("SMTP Server Host:", value="smtp.office365.com", help="Office 365: smtp.office365.com | Gmail: smtp.gmail.com")
-            sender_email = st.text_input("Your Corporate Email Address:")
-        with sc2:
-            smtp_port = st.number_input("SMTP Port Connection:", value=587, step=1)
-            sender_password = st.text_input("Your Account App Password:", type="password", help="If using MFA, generate an App Password in your security account profile panel.")
-
-    st.markdown("### ✉️ Distribution Messaging Template")
-    send_mail_toggle = st.checkbox("Enable Background Email Delivery via SMTP?", value=True)
-    
-    mail_sub = st.text_input("Outbound Subject Header Line Blueprint:", value="Sales & Stocks Report | Update Window Cycle")
-    mail_txt = st.text_area("Global Outbound Context Body String Layout:", value="Dear valued partner,\n\nPlease find attached your custom Sales and Stock Performance Report.\n\nThanks,\nCategory Management Team", height=120)
-
-    st.markdown("---")
-
-    if st.button("⚡ Execute Reporting Allocation Loops", type="primary"):
-        if sales_f and stock_f and master_f:
-            if send_mail_toggle and (not sender_email or not sender_password):
-                st.error("Please fill in both your email address and app password inside the local host SMTP panel above.")
-                return
-
-            with st.spinner("Processing data splits and executing local background mail transmission streams..."):
-                try:
-                    smtp_settings = {
-                        "smtp_server": smtp_server,
-                        "smtp_port": int(smtp_port),
-                        "sender_email": sender_email,
-                        "sender_password": sender_password
-                    }
-
-                    count, files_dict, logs = run_sns_process(sales_f, stock_f, master_f, send_mail_toggle, mail_sub, mail_txt, start_d, end_d, smtp_settings)
-                    
-                    if count > 0:
-                        st.success(f"🎉 Process Complete! Successfully generated clean data splits for {count} unique vendors.")
-                        
-                        if logs:
-                            st.markdown("### 📬 Delivery Status Tracking Log")
-                            st.dataframe(pd.DataFrame(logs), use_container_width=True, hide_index=True)
-                        
-                        if files_dict:
-                            import zipfile
-                            z_io = io.BytesIO()
-                            with zipfile.ZipFile(z_io, 'w') as zf:
-                                for fn, fb in files_dict.items():
-                                    zf.writestr(fn, fb)
-                            st.download_button("📥 Download All Partner Workbooks Package (ZIP Archive File)", data=z_io.getvalue(), file_name=f"SNS_Supplier_Bundles_{datetime.datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip")
-                    else:
-                        st.warning("⚠️ No matching row records found for the specified metrics.")
-                except Exception as err:
-                    st.error(f"🚨 Core Execution Failure Block: {str(err)}")
-        else:
-            st.warning("Please upload all three workbook files into the slots to start parsing.")
+# Display everything cleanly in the notebook output cell area
+print("⚙️ SUPPLIER PERFORMANCE ENGINE (INTERACTIVE CELL)")
+display(widgets.HBox([upload_sales, upload_stock, upload_master]))
+display(widgets.HBox([start_date_picker, end_date_picker]))
+display(btn_run)
+display(output_area)
