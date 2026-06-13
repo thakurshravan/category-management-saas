@@ -179,7 +179,7 @@ def render_public_supplier_portal(url_params):
         st.caption(f"⏳ This secure submission window will automatically close on: **{expiry_param}**")
     st.markdown("---")
     
-    st.warning("⚠️ **Strict Formatting Rule:** Your file columns must lock to this exact layout sequence:  \n"
+    st.warning("⚠️ **Strict Formatting Rule:** Your file columns must lock to this exact layout sequence: \n"
                "`Date` | `EAN NUMBER` | `SAP CODE` | `Article Description` | `Item Description` | `Brand` | `Family Name` | `Type` | `Cost` | `Physical Stock`")
     
     supplier_uploaded_file = st.file_uploader("Upload your completed stock ledger:", type=["xlsx", "csv"])
@@ -206,3 +206,9 @@ def render_public_supplier_portal(url_params):
                 st.success(f"✅ Success! Your stock ledger has been verified and synced directly with the Category Manager.")
         except Exception as e:
             st.error(f"Error handling secure validation layout checks: {e}")
+
+# ==========================================================
+# APPLICATION INITIALIZATION RUNNER
+# ==========================================================
+if __name__ == "__main__":
+    render_ui()
